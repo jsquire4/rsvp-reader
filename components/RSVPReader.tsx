@@ -47,6 +47,7 @@ export default function RSVPReader({
   const [showSettings, setShowSettings] = useState(false);
   const [showChapterMenu, setShowChapterMenu] = useState(false);
   const [showWordSelection, setShowWordSelection] = useState(false);
+  const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(null);
   const [settings, setSettings] = useState<Settings>({
     accentColor: '#00ff88',
     fontFamily: 'System',
@@ -54,6 +55,14 @@ export default function RSVPReader({
   });
   const [tooltip, setTooltip] = useState<string | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Auto-reduce font size for paragraph and page views
+  const getEffectiveFontSize = () => {
+    if (viewMode === 'paragraph' || viewMode === 'page') {
+      return Math.max(16, settings.fontSize * 0.6); // 60% of speed reading size, minimum 16pt
+    }
+    return settings.fontSize;
+  };
 
   // Flatten all words from all chapters for continuous reading
   const allWords = chapters.flatMap(ch => ch.words);
@@ -172,8 +181,16 @@ export default function RSVPReader({
 
   const handleViewModeChange = (newMode: ViewMode) => {
     if (newMode === 'speed' && viewMode !== 'speed') {
-      // Show word selection modal when switching to speed reading
-      setShowWordSelection(true);
+      // If coming from paragraph/page view and word is selected, use that
+      if (selectedWordIndex !== null) {
+        setCurrentWordIndex(selectedWordIndex);
+        setSelectedWordIndex(null);
+        setViewMode('speed');
+        setIsPlaying(false);
+      } else {
+        // Show word selection modal when switching to speed reading
+        setShowWordSelection(true);
+      }
     } else {
       setViewMode(newMode);
       setIsPlaying(false);
@@ -185,15 +202,21 @@ export default function RSVPReader({
     setViewMode('speed');
     setShowWordSelection(false);
     setIsPlaying(false);
+    setSelectedWordIndex(null);
   };
 
-  // Get paragraph text around current word
-  const getParagraphText = () => {
+  const handleWordPress = (wordIndex: number) => {
+    if (viewMode === 'paragraph' || viewMode === 'page') {
+      setSelectedWordIndex(wordIndex);
+    }
+  };
+
+  // Get paragraph boundaries
+  const getParagraphBoundaries = () => {
     const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
     const chapterStart = wordsBeforeChapter;
     const chapterEnd = chapterStart + currentChapter.words.length;
     
-    // Find paragraph boundaries (look for sentence endings)
     let paraStart = chapterStart;
     let paraEnd = chapterEnd;
     
@@ -214,6 +237,55 @@ export default function RSVPReader({
       }
     }
     
+    return { paraStart, paraEnd };
+  };
+
+  // Navigate to previous paragraph
+  const handlePreviousParagraph = () => {
+    const { paraStart } = getParagraphBoundaries();
+    const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
+    
+    // Find previous paragraph start
+    let prevParaStart = wordsBeforeChapter;
+    for (let i = paraStart - 2; i >= wordsBeforeChapter; i--) {
+      const word = allWords[i];
+      if (word.match(/[.!?]$/)) {
+        prevParaStart = i + 1;
+        break;
+      }
+      if (i === wordsBeforeChapter) {
+        prevParaStart = wordsBeforeChapter;
+        break;
+      }
+    }
+    
+    setCurrentWordIndex(prevParaStart);
+  };
+
+  // Navigate to next paragraph
+  const handleNextParagraph = () => {
+    const { paraEnd } = getParagraphBoundaries();
+    const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
+    const chapterEnd = wordsBeforeChapter + currentChapter.words.length;
+    
+    if (paraEnd < chapterEnd) {
+      setCurrentWordIndex(paraEnd);
+    }
+  };
+
+  // Navigate to previous page (chapter)
+  const handlePreviousPage = () => {
+    handlePreviousChapter();
+  };
+
+  // Navigate to next page (chapter)
+  const handleNextPage = () => {
+    handleNextChapter();
+  };
+
+  // Get paragraph text around current word
+  const getParagraphText = () => {
+    const { paraStart, paraEnd } = getParagraphBoundaries();
     return allWords.slice(paraStart, paraEnd).join(' ');
   };
 
@@ -333,9 +405,9 @@ export default function RSVPReader({
             <View style={styles.contextWordsLeft}>
               <Text style={styles.contextWordsContainer} numberOfLines={1}>
                 {prevWords.map((word, idx) => {
-                  // Fade from center (0.6) to edge (0.1) - closer to edge = more faded
-                  const distanceFromCenter = idx + 1;
-                  const opacity = Math.max(0.1, 0.6 - (distanceFromCenter / wordsToShow) * 0.5);
+                  // Left side: fade left (idx=0 furthest left = lowest opacity, idx=2 closest to center = highest opacity)
+                  // Opacity increases as idx increases (closer to center)
+                  const opacity = Math.max(0.1, 0.1 + (idx / wordsToShow) * 0.5);
                   const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
                   return (
                     <Text 
@@ -365,9 +437,9 @@ export default function RSVPReader({
             <View style={styles.contextWordsRight}>
               <Text style={styles.contextWordsContainer} numberOfLines={1}>
                 {nextWords.map((word, idx) => {
-                  // Fade from center (0.6) to edge (0.1) - closer to edge = more faded
-                  const distanceFromCenter = idx + 1;
-                  const opacity = Math.max(0.1, 0.6 - (distanceFromCenter / wordsToShow) * 0.5);
+                  // Right side: fade right (idx=0 closest to center = highest opacity, idx=2 furthest right = lowest opacity)
+                  const distanceFromRightEdge = idx + 1;
+                  const opacity = Math.max(0.1, 0.6 - (distanceFromRightEdge / wordsToShow) * 0.5);
                   const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
                   return (
                     <Text 
@@ -392,17 +464,73 @@ export default function RSVPReader({
         
         {viewMode === 'paragraph' && (
           <ScrollView style={styles.textView} contentContainerStyle={styles.textViewContent}>
-            <Text style={[styles.paragraphText, { fontSize: settings.fontSize, fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
-              {getParagraphText()}
-            </Text>
+            <View style={styles.centeredTextView}>
+              <Text style={[styles.paragraphText, { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
+                {getParagraphText().split(' ').map((word, idx) => {
+                  const { paraStart } = getParagraphBoundaries();
+                  const wordIndex = paraStart + idx;
+                  const isSelected = selectedWordIndex === wordIndex;
+                  return (
+                    <Text
+                      key={idx}
+                      onPress={() => handleWordPress(wordIndex)}
+                      style={[
+                        { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily },
+                        isSelected && { backgroundColor: settings.accentColor + '40', color: settings.accentColor }
+                      ]}
+                    >
+                      {word}{idx < getParagraphText().split(' ').length - 1 ? ' ' : ''}
+                    </Text>
+                  );
+                })}
+              </Text>
+            </View>
+            {selectedWordIndex !== null && (
+              <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
+                <TouchableOpacity
+                  style={[styles.rsvpPromptButton, { backgroundColor: settings.accentColor }]}
+                  onPress={() => handleViewModeChange('speed')}
+                >
+                  <Text style={styles.rsvpPromptButtonText}>Start RSVP here</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </ScrollView>
         )}
         
         {viewMode === 'page' && (
           <ScrollView style={styles.textView} contentContainerStyle={styles.textViewContent}>
-            <Text style={[styles.pageText, { fontSize: settings.fontSize, fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
-              {getPageText()}
-            </Text>
+            <View style={styles.centeredTextView}>
+              <Text style={[styles.pageText, { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
+                {getPageText().split(' ').map((word, idx) => {
+                  const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
+                  const wordIndex = wordsBeforeChapter + idx;
+                  const isSelected = selectedWordIndex === wordIndex;
+                  return (
+                    <Text
+                      key={idx}
+                      onPress={() => handleWordPress(wordIndex)}
+                      style={[
+                        { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily },
+                        isSelected && { backgroundColor: settings.accentColor + '40', color: settings.accentColor }
+                      ]}
+                    >
+                      {word}{idx < getPageText().split(' ').length - 1 ? ' ' : ''}
+                    </Text>
+                  );
+                })}
+              </Text>
+            </View>
+            {selectedWordIndex !== null && (
+              <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
+                <TouchableOpacity
+                  style={[styles.rsvpPromptButton, { backgroundColor: settings.accentColor }]}
+                  onPress={() => handleViewModeChange('speed')}
+                >
+                  <Text style={styles.rsvpPromptButtonText}>Start RSVP here</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </ScrollView>
         )}
       </View>
@@ -410,40 +538,40 @@ export default function RSVPReader({
       {/* Speed controls with slider - disabled when not in speed view */}
       {viewMode === 'speed' && (
         <View style={styles.speedControls}>
-          <TouchableOpacity 
-            style={styles.speedButton} 
-            onPress={() => handleSpeedChange(-25)}
-            onPressIn={() => setTooltip('Decrease speed')}
-            onPressOut={() => setTooltip(null)}
-          >
-            <Text style={styles.speedButtonText}>−</Text>
-          </TouchableOpacity>
-          <View style={styles.sliderContainer}>
-            <Slider
-              style={styles.slider}
-              minimumValue={50}
-              maximumValue={1000}
-              value={wordsPerMinute}
-              onValueChange={handleSpeedSliderChange}
-              minimumTrackTintColor={settings.accentColor}
-              maximumTrackTintColor="#333"
-              thumbTintColor={settings.accentColor}
-              step={1}
-            />
-            <View style={styles.speedInfo}>
-              <Text style={styles.speedText}>{wordsPerMinute} WPM</Text>
-              <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
-            </View>
+        <TouchableOpacity 
+          style={styles.speedButton} 
+          onPress={() => handleSpeedChange(-25)}
+          onPressIn={() => setTooltip('Decrease speed')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={styles.speedButtonText}>−</Text>
+        </TouchableOpacity>
+        <View style={styles.sliderContainer}>
+          <Slider
+            style={styles.slider}
+            minimumValue={50}
+            maximumValue={1000}
+            value={wordsPerMinute}
+            onValueChange={handleSpeedSliderChange}
+            minimumTrackTintColor={settings.accentColor}
+            maximumTrackTintColor="#333"
+            thumbTintColor={settings.accentColor}
+            step={1}
+          />
+          <View style={styles.speedInfo}>
+            <Text style={styles.speedText}>{wordsPerMinute} WPM</Text>
+            <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
           </View>
-          <TouchableOpacity 
-            style={styles.speedButton} 
-            onPress={() => handleSpeedChange(25)}
-            onPressIn={() => setTooltip('Increase speed')}
-            onPressOut={() => setTooltip(null)}
-          >
-            <Text style={styles.speedButtonText}>+</Text>
-          </TouchableOpacity>
         </View>
+        <TouchableOpacity 
+          style={styles.speedButton} 
+          onPress={() => handleSpeedChange(25)}
+          onPressIn={() => setTooltip('Increase speed')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={styles.speedButtonText}>+</Text>
+        </TouchableOpacity>
+      </View>
       )}
       
       {/* Disabled speed controls indicator */}
@@ -452,34 +580,6 @@ export default function RSVPReader({
           <Text style={styles.disabledText}>Speed reading controls available in Speed view</Text>
         </View>
       )}
-
-      {/* View Mode Selector */}
-      <View style={styles.viewModeSelector}>
-        <TouchableOpacity
-          style={[styles.viewModeButton, viewMode === 'speed' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('speed')}
-        >
-          <Text style={[styles.viewModeText, viewMode === 'speed' && styles.viewModeTextActive]}>
-            Speed
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.viewModeButton, viewMode === 'paragraph' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('paragraph')}
-        >
-          <Text style={[styles.viewModeText, viewMode === 'paragraph' && styles.viewModeTextActive]}>
-            Paragraph
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.viewModeButton, viewMode === 'page' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('page')}
-        >
-          <Text style={[styles.viewModeText, viewMode === 'page' && styles.viewModeTextActive]}>
-            Page
-          </Text>
-        </TouchableOpacity>
-      </View>
 
       {/* Tooltip */}
       {tooltip && (
@@ -508,13 +608,24 @@ export default function RSVPReader({
         </TouchableOpacity>
         
         <TouchableOpacity 
-          style={[styles.button, viewMode !== 'speed' && styles.buttonDisabled]} 
-          onPress={handlePrevious}
-          disabled={viewMode !== 'speed'}
-          onPressIn={() => viewMode === 'speed' && setTooltip('Previous word')}
+          style={styles.button} 
+          onPress={() => {
+            if (viewMode === 'speed') {
+              handlePrevious();
+            } else if (viewMode === 'paragraph') {
+              handlePreviousParagraph();
+            } else if (viewMode === 'page') {
+              handlePreviousPage();
+            }
+          }}
+          onPressIn={() => {
+            if (viewMode === 'speed') setTooltip('Previous word');
+            else if (viewMode === 'paragraph') setTooltip('Previous paragraph');
+            else if (viewMode === 'page') setTooltip('Previous page');
+          }}
           onPressOut={() => setTooltip(null)}
         >
-          <Text style={[styles.buttonText, viewMode !== 'speed' && styles.buttonTextDisabled]}>{'<'}</Text>
+          <Text style={styles.buttonText}>{'<'}</Text>
         </TouchableOpacity>
         
         <TouchableOpacity 
@@ -528,13 +639,24 @@ export default function RSVPReader({
         </TouchableOpacity>
         
         <TouchableOpacity 
-          style={[styles.button, viewMode !== 'speed' && styles.buttonDisabled]} 
-          onPress={handleNext}
-          disabled={viewMode !== 'speed'}
-          onPressIn={() => viewMode === 'speed' && setTooltip('Next word')}
+          style={styles.button} 
+          onPress={() => {
+            if (viewMode === 'speed') {
+              handleNext();
+            } else if (viewMode === 'paragraph') {
+              handleNextParagraph();
+            } else if (viewMode === 'page') {
+              handleNextPage();
+            }
+          }}
+          onPressIn={() => {
+            if (viewMode === 'speed') setTooltip('Next word');
+            else if (viewMode === 'paragraph') setTooltip('Next paragraph');
+            else if (viewMode === 'page') setTooltip('Next page');
+          }}
           onPressOut={() => setTooltip(null)}
         >
-          <Text style={[styles.buttonText, viewMode !== 'speed' && styles.buttonTextDisabled]}>{'>'}</Text>
+          <Text style={styles.buttonText}>{'>'}</Text>
         </TouchableOpacity>
         <TouchableOpacity 
           style={styles.button} 
@@ -562,6 +684,32 @@ export default function RSVPReader({
         >
           <Text style={styles.buttonText}>⚙</Text>
         </TouchableOpacity>
+        
+        {/* View Mode Buttons */}
+        <TouchableOpacity
+          style={[styles.button, styles.viewModeButton, viewMode === 'speed' && styles.viewModeButtonActive]}
+          onPress={() => handleViewModeChange('speed')}
+          onPressIn={() => setTooltip('Speed reading')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={[styles.buttonText, viewMode === 'speed' && { color: settings.accentColor }]}>S</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.button, styles.viewModeButton, viewMode === 'paragraph' && styles.viewModeButtonActive]}
+          onPress={() => handleViewModeChange('paragraph')}
+          onPressIn={() => setTooltip('Paragraph view')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={[styles.buttonText, viewMode === 'paragraph' && { color: settings.accentColor }]}>P</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.button, styles.viewModeButton, viewMode === 'page' && styles.viewModeButtonActive]}
+          onPress={() => handleViewModeChange('page')}
+          onPressIn={() => setTooltip('Page view')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={[styles.buttonText, viewMode === 'page' && { color: settings.accentColor }]}>Pg</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Progress bars */}
@@ -572,8 +720,7 @@ export default function RSVPReader({
           maximumValue={allWords.length - 1}
           value={currentWordIndex}
           onValueChange={(value) => {
-            const newIndex = Math.round(value);
-            setCurrentWordIndex(newIndex);
+            setCurrentWordIndex(Math.round(value));
             setIsPlaying(false);
           }}
           minimumTrackTintColor={settings.accentColor}
@@ -1036,38 +1183,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  modalButtonTextWhite: {
+  chapterList: {
+    maxHeight: 400,
+  },
+  chapterListContent: {
+    paddingBottom: 10,
+  },
+  chapterMenuItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  chapterMenuItemSelected: {
+    backgroundColor: '#444',
+  },
+  chapterMenuItemText: {
     color: '#fff',
     fontSize: 16,
+    flex: 1,
+  },
+  chapterMenuCheck: {
+    color: '#00ff88',
+    fontSize: 20,
     fontWeight: 'bold',
   },
-  viewModeSelector: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-    gap: 10,
-    maxWidth: 600,
-    alignSelf: 'center',
-    width: '100%',
-  },
   viewModeButton: {
-    flex: 1,
-    backgroundColor: '#333',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
+    minWidth: 50,
   },
   viewModeButtonActive: {
     backgroundColor: '#555',
-  },
-  viewModeText: {
-    color: '#999',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  viewModeTextActive: {
-    color: '#fff',
   },
   speedControlsDisabled: {
     padding: 15,
@@ -1091,6 +1239,16 @@ const styles = StyleSheet.create({
   },
   textViewContent: {
     padding: 20,
+    paddingTop: 60, // Space for chapter name
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  centeredTextView: {
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    maxWidth: 800,
+    alignSelf: 'center',
+    width: '100%',
   },
   paragraphText: {
     color: '#fff',
@@ -1128,32 +1286,32 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 20,
   },
-  chapterList: {
-    maxHeight: 400,
-  },
-  chapterListContent: {
-    paddingBottom: 10,
-  },
-  chapterMenuItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#333',
+  rsvpPrompt: {
+    position: 'absolute',
+    bottom: 80,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    padding: 8,
     borderRadius: 8,
-    marginBottom: 8,
+    borderWidth: 2,
+    alignItems: 'center',
+    zIndex: 1000,
+    minWidth: 140,
   },
-  chapterMenuItemSelected: {
-    backgroundColor: '#444',
+  rsvpPromptButton: {
+    padding: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    width: '100%',
   },
-  chapterMenuItemText: {
+  rsvpPromptButtonText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  modalButtonTextWhite: {
     color: '#fff',
     fontSize: 16,
-    flex: 1,
-  },
-  chapterMenuCheck: {
-    color: '#00ff88',
-    fontSize: 20,
     fontWeight: 'bold',
   },
 });

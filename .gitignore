@@ -3,9 +3,6 @@
 # dependencies
 node_modules/
 
-# Ebook files
-*.epub
-
 # Expo
 .expo/
 dist/
