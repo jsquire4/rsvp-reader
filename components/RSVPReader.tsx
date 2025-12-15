@@ -245,7 +245,49 @@ export default function RSVPReader({
   // Flatten all words from all chapters for continuous reading
   const allWords = chapters.flatMap(ch => ch.words);
   const currentChapter = chapters[currentChapterIndex];
-  const currentWord = allWords[currentWordIndex] || '';
+  
+  // Helper function to get clean word length (without punctuation)
+  const getCleanWordLength = (word: string): number => {
+    if (!word) return 0;
+    return word.replace(/[.,!?;:—–()[\]{}"'«‹»›-]/g, '').length;
+  };
+  
+  // Determine if we should combine current word with next word for display
+  const getDisplayWords = (wordIndex: number): { words: string[], nextIndex: number } => {
+    const currentWord = allWords[wordIndex] || '';
+    const currentCleanLength = getCleanWordLength(currentWord);
+    
+    // Single letter words: always combine with next word
+    if (currentCleanLength === 1 && wordIndex < allWords.length - 1) {
+      const nextWord = allWords[wordIndex + 1] || '';
+      return {
+        words: [currentWord, nextWord],
+        nextIndex: wordIndex + 2 // Skip both words
+      };
+    }
+    
+    // Two letter words: combine with next word if next word is less than 5 letters
+    if (currentCleanLength === 2 && wordIndex < allWords.length - 1) {
+      const nextWord = allWords[wordIndex + 1] || '';
+      const nextCleanLength = getCleanWordLength(nextWord);
+      if (nextCleanLength < 5) {
+        return {
+          words: [currentWord, nextWord],
+          nextIndex: wordIndex + 2 // Skip both words
+        };
+      }
+    }
+    
+    // Default: display single word
+    return {
+      words: [currentWord],
+      nextIndex: wordIndex + 1
+    };
+  };
+  
+  const displayWordsInfo = getDisplayWords(currentWordIndex);
+  const displayWords = displayWordsInfo.words;
+  const currentWord = displayWords.join(' '); // Combine words with space for display
 
   // Load saved settings and recent colors on mount
   useEffect(() => {
@@ -356,7 +398,7 @@ export default function RSVPReader({
   const delayMs = (60 / settings.wordsPerMinute) * 1000;
 
   // Calculate swing variation based on word length
-  // Adds +/- 15% variation, biased toward longer words (slower) and shorter words (faster)
+  // Adds +/- 10% variation, biased toward longer words (slower) and shorter words (faster)
   const calculateSwing = (word: string): number => {
     if (!word || word.length === 0) return 0;
     
@@ -368,55 +410,111 @@ export default function RSVPReader({
     // Cap at 15 for normalization, but allow longer words
     const normalizedLength = Math.min(wordLength / 15, 1);
     
-    // Generate random value between -0.15 and +0.15
-    const randomVariation = (Math.random() * 0.3) - 0.15; // Range: -0.15 to +0.15
+    // Generate random value between -0.10 and +0.10
+    const randomVariation = (Math.random() * 0.2) - 0.10; // Range: -0.10 to +0.10
     
     // Bias factor: shifts the random variation based on word length
-    // Short words (normalizedLength ~ 0): bias toward -0.15 (faster)
-    // Long words (normalizedLength ~ 1): bias toward +0.15 (slower)
+    // Short words (normalizedLength ~ 0): bias toward -0.10 (faster)
+    // Long words (normalizedLength ~ 1): bias toward +0.10 (slower)
     // Medium words (normalizedLength ~ 0.5): neutral bias
-    const biasFactor = (normalizedLength - 0.5) * 0.2; // Range: -0.1 to +0.1
+    const biasFactor = (normalizedLength - 0.5) * 0.133; // Range: -0.0665 to +0.0665 (reduced to fit within +/- 10%)
     
     // Combine random variation with bias
     // The bias shifts the center of the random distribution
     const swing = randomVariation + biasFactor;
     
-    // Clamp to +/- 15% to ensure we stay within bounds
-    return Math.max(-0.15, Math.min(0.15, swing));
+    // Clamp to +/- 10% to ensure we stay within bounds
+    return Math.max(-0.10, Math.min(0.10, swing));
   };
 
   // Calculate delay for current word based on punctuation
   // Punctuation pauses are ADDITIONAL to the base word delay
-  const getWordDelay = (word: string, wordIndex: number): number => {
-    if (!word || word.length === 0) return delayMs;
+  const getWordDelay = (wordIndex: number): number => {
+    const displayInfo = getDisplayWords(wordIndex);
+    const wordsToDisplay = displayInfo.words;
+    const isMultipleWords = wordsToDisplay.length > 1;
     
-    // Check if word is hyphenated (contains hyphen)
-    const isHyphenated = /-/.test(word);
-    
-    // Apply swing to base delay (only affects the base word timing, not punctuation pauses)
-    const swingFactor = calculateSwing(word);
-    let baseDelayWithSwing = delayMs * (1 + swingFactor);
-    
-    // For hyphenated words, add the pause of two words combined (double the base delay)
-    if (isHyphenated) {
-      baseDelayWithSwing = delayMs * 2 * (1 + swingFactor);
+    // When multiple words are displayed together, calculate delay scaling based on WPM
+    // At slower speeds (< 250 WPM): single word delay
+    // From 250-600 WPM: scale from single to double word delay
+    // At 600+ WPM: full two-word delay (double)
+    // Exception: If total letter count exceeds 11 letters, always use full two-word delay
+    let delayMultiplier = 1.0;
+    if (isMultipleWords) {
+      // Calculate total letter count (excluding spaces and punctuation)
+      const totalLetters = wordsToDisplay.reduce((sum, word) => {
+        return sum + getCleanWordLength(word);
+      }, 0);
+      
+      const wpm = settings.wordsPerMinute;
+      
+      // If total letters exceed 11, always use full two-word delay
+      if (totalLetters > 11) {
+        delayMultiplier = 2.0; // Full two-word delay
+      } else if (wpm < 250) {
+        delayMultiplier = 1.0; // Single word delay
+      } else if (wpm >= 250 && wpm <= 600) {
+        // Linear scaling from 1.0 to 2.0 over 250-600 WPM range
+        const scaleFactor = (wpm - 250) / (600 - 250); // 0.0 to 1.0
+        delayMultiplier = 1.0 + scaleFactor; // 1.0 to 2.0
+      } else {
+        delayMultiplier = 2.0; // Full two-word delay
+      }
     }
     
-    let totalDelay = baseDelayWithSwing; // Start with base word delay + swing (and double for hyphenated)
+    // Calculate delay for first word (or single word)
+    const wordToUse = wordsToDisplay[0] || '';
+    const actualWordIndex = wordIndex;
     
-    // Check for opening quotation marks at the start of the word
-    const startsWithQuote = /^["'«‹]/.test(word);
+    if (!wordToUse || wordToUse.length === 0) return delayMs;
+    
+    // Check if word is hyphenated (contains hyphen, em dash, en dash, or double dashes)
+    // Match: regular hyphen (-), em dash (—), en dash (–), or double hyphens/dashes (--)
+    const hyphenPattern = /[-—–]{1,2}/g;
+    const isHyphenated = hyphenPattern.test(wordToUse);
+    
+    // Count number of hyphenated parts
+    // Count all hyphen/dash occurrences (including em dashes, en dashes, and double dashes)
+    let hyphenatedParts = 1; // Default to 1 part (non-hyphenated word)
+    if (isHyphenated) {
+      // Reset regex lastIndex to ensure accurate counting
+      hyphenPattern.lastIndex = 0;
+      const matches = wordToUse.match(hyphenPattern) || [];
+      // Count all hyphen/dash occurrences and add 1 to get number of parts
+      hyphenatedParts = matches.length + 1;
+    }
+    
+    // Apply swing to base delay
+    const swingFactor = calculateSwing(wordToUse);
+    let baseDelayWithSwing = delayMs * (1 + swingFactor);
+    
+    // For hyphenated words, pause for the same number of parts as hyphenated words
+    // e.g., 3 parts = 3x delay, 4 parts = 4x delay
+    if (isHyphenated) {
+      baseDelayWithSwing = delayMs * hyphenatedParts * (1 + swingFactor);
+    }
+    
+    // Apply multiplier for multiple words (scales based on WPM)
+    baseDelayWithSwing = baseDelayWithSwing * delayMultiplier;
+    
+    // Use the last word for punctuation detection
+    const lastWord = wordsToDisplay[wordsToDisplay.length - 1] || wordToUse;
+    const lastWordIndex = wordIndex + wordsToDisplay.length - 1;
+    let totalDelay = baseDelayWithSwing;
+    
+    // Check for opening quotation marks at the start of the last word
+    const startsWithQuote = /^["'«‹]/.test(lastWord);
     
     // Check if this is the end of a paragraph
     // A paragraph ends if we're at the end of a chapter
     let isEndOfParagraph = false;
-    if (wordIndex >= 0) {
+    if (lastWordIndex >= 0) {
       let wordCount = 0;
       for (let i = 0; i < chapters.length; i++) {
         const chapterEnd = wordCount + chapters[i].words.length;
-        if (wordIndex < chapterEnd) {
+        if (lastWordIndex < chapterEnd) {
           // Check if this is the last word in this chapter
-          isEndOfParagraph = (wordIndex === chapterEnd - 1);
+          isEndOfParagraph = (lastWordIndex === chapterEnd - 1);
           break;
         }
         wordCount = chapterEnd;
@@ -424,7 +522,7 @@ export default function RSVPReader({
     }
     
     // Check for comma
-    if (/,$/.test(word)) {
+    if (/,$/.test(lastWord)) {
       // Comma pause: additional pause equal to 75% of word pause (delayMs * 0.75)
       totalDelay += delayMs * 0.75;
     }
@@ -434,7 +532,7 @@ export default function RSVPReader({
       totalDelay += delayMs * 0.75;
     }
     // Check for end-of-sentence punctuation: . ! ? ; : — –
-    else if (/[.!?;:]$/.test(word) || word.endsWith('—') || word.endsWith('–')) {
+    else if (/[.!?;:]$/.test(lastWord) || lastWord.endsWith('—') || lastWord.endsWith('–')) {
       // End of sentence pause: additional pause equal to 75% of word pause (delayMs * 0.75) - same as comma
       totalDelay += delayMs * 0.75;
       
@@ -445,13 +543,13 @@ export default function RSVPReader({
       }
     }
     // Check for other grammatical markings: closing quotes, parentheses, brackets, etc.
-    else if (/[)\]}"'»›]$/.test(word)) {
+    else if (/[)\]}"'»›]$/.test(lastWord)) {
       // Other grammatical markings: additional pause equal to 37.5% of word pause (delayMs * 0.375)
       totalDelay += delayMs * 0.375;
     }
     
     // Also check if this word is at the end of a paragraph (even without sentence-ending punctuation)
-    if (isEndOfParagraph && !/[.!?;:]$/.test(word) && !word.endsWith('—') && !word.endsWith('–')) {
+    if (isEndOfParagraph && !/[.!?;:]$/.test(lastWord) && !lastWord.endsWith('—') && !lastWord.endsWith('–')) {
       // End of paragraph: additional pause equal to 150% of word pause (delayMs * 1.5)
       totalDelay += delayMs * 1.5;
     }
@@ -495,17 +593,21 @@ export default function RSVPReader({
     }
 
     // Use setTimeout with dynamic delays based on punctuation
-    const currentWord = allWords[currentWordIndex] || '';
-    const wordDelay = getWordDelay(currentWord, currentWordIndex);
+    const displayInfo = getDisplayWords(currentWordIndex);
+    const wordDelay = getWordDelay(currentWordIndex);
+    const nextIndex = displayInfo.nextIndex;
     
     const timeoutId = setTimeout(() => {
       setCurrentWordIndex((prev) => {
-        if (prev >= allWords.length - 1) {
+        const displayInfo = getDisplayWords(prev);
+        const nextIdx = displayInfo.nextIndex;
+        
+        if (nextIdx >= allWords.length) {
           setIsPlaying(false);
           onComplete?.();
           return prev;
         }
-        return prev + 1;
+        return nextIdx;
       });
     }, wordDelay);
     
@@ -830,16 +932,138 @@ export default function RSVPReader({
     return letterPositions[targetLetterIndex] || letterPositions[0];
   };
 
-  // Render word with color accent on dynamically positioned letter
-  const renderWordWithAccent = (word: string) => {
-    if (!word || word.length === 0) return <Text style={[styles.word, { fontSize: settings.fontSize, color: settings.wordColor }]}>{word}</Text>;
+  // Render word(s) with color accent on dynamically positioned letter
+  // Handles single words or multiple words joined with spaces
+  // When multiple words are displayed, only highlights the first character of the second word
+  // For word pairs, smaller word appears above, larger word on primary line
+  const renderWordWithAccent = (wordOrWords: string) => {
+    if (!wordOrWords || wordOrWords.length === 0) {
+      return <Text style={[styles.word, { fontSize: settings.fontSize, color: settings.wordColor }]}>{wordOrWords}</Text>;
+    }
     
-    const accentIndex = getAccentIndex(word);
-    const before = word.substring(0, accentIndex);
-    const accent = word[accentIndex];
-    const after = word.substring(accentIndex + 1);
-
     const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
+    
+    // If multiple words (contains space), highlight only first character of second word
+    if (wordOrWords.includes(' ')) {
+      const words = wordOrWords.split(' ');
+      const firstWord = words[0] || '';
+      const secondWord = words[1] || '';
+      
+      // Get clean lengths to determine which is smaller
+      const firstWordLength = getCleanWordLength(firstWord);
+      const secondWordLength = getCleanWordLength(secondWord);
+      
+      // Estimate if words would wrap based on total character count and font size
+      // Rough estimate: characters are ~0.6 * fontSize wide, container is ~1000px max (with padding ~960px usable)
+      // Only apply vertical layout if words are very likely to wrap
+      const totalCharCount = firstWord.length + secondWord.length + 1; // +1 for space
+      // Estimate characters per line: container width / average char width
+      // Use conservative estimate - only wrap if definitely exceeding line width
+      const estimatedCharWidth = settings.fontSize * 0.6; // Average character width
+      const usableWidth = 960; // Approximate usable width (1000px - padding)
+      const estimatedCharsPerLine = Math.floor(usableWidth / estimatedCharWidth);
+      // Only wrap if total chars exceed 90% of estimated line capacity (conservative)
+      const wouldWrap = totalCharCount > (estimatedCharsPerLine * 0.9);
+      
+      // Find first letter character in second word
+      let accentCharIndex = -1;
+      let accentChar = '';
+      let beforeAccent = '';
+      let afterAccent = '';
+      
+      if (secondWord) {
+        for (let i = 0; i < secondWord.length; i++) {
+          if (/[a-zA-Z]/.test(secondWord[i])) {
+            accentCharIndex = i;
+            accentChar = secondWord[i];
+            beforeAccent = secondWord.substring(0, i);
+            afterAccent = secondWord.substring(i + 1);
+            break;
+          }
+        }
+      }
+      
+      // Only apply vertical layout if words would actually wrap
+      // Determine which word is smaller and render accordingly
+      // Smaller word goes above, larger word stays on primary line
+      if (wouldWrap && firstWordLength < secondWordLength) {
+        // First word is smaller: render it above, second word on primary line
+        return (
+          <View style={styles.wordPairContainer}>
+            {/* Smaller word above */}
+            <Text style={[styles.wordPairSmall, { fontSize: settings.fontSize, fontFamily, color: settings.wordColor }]}>
+              {firstWord}
+            </Text>
+            {/* Larger word on primary line */}
+            <Text style={[styles.word, { fontSize: settings.fontSize, fontFamily }]}>
+              {accentCharIndex >= 0 ? (
+                <>
+                  <Text style={{ color: settings.wordColor }}>{beforeAccent}</Text>
+                  <Text style={[styles.accentLetter, { color: settings.accentColor }]}>{accentChar}</Text>
+                  <Text style={{ color: settings.wordColor }}>{afterAccent}</Text>
+                </>
+              ) : (
+                <Text style={{ color: settings.wordColor }}>{secondWord}</Text>
+              )}
+              {words.length > 2 && words.slice(2).map((word, idx) => (
+                <Text key={idx + 2} style={{ color: settings.wordColor }}> {word}</Text>
+              ))}
+            </Text>
+          </View>
+        );
+      } else if (wouldWrap && secondWordLength < firstWordLength) {
+        // Second word is smaller: render it above, first word on primary line
+        return (
+          <View style={styles.wordPairContainer}>
+            {/* Smaller word above */}
+            <Text style={[styles.wordPairSmall, { fontSize: settings.fontSize, fontFamily }]}>
+              {accentCharIndex >= 0 ? (
+                <>
+                  <Text style={{ color: settings.wordColor }}>{beforeAccent}</Text>
+                  <Text style={[styles.accentLetter, { color: settings.accentColor }]}>{accentChar}</Text>
+                  <Text style={{ color: settings.wordColor }}>{afterAccent}</Text>
+                </>
+              ) : (
+                <Text style={{ color: settings.wordColor }}>{secondWord}</Text>
+              )}
+            </Text>
+            {/* Larger word on primary line */}
+            <Text style={[styles.word, { fontSize: settings.fontSize, fontFamily, color: settings.wordColor }]}>
+              {firstWord}
+              {words.length > 2 && words.slice(2).map((word, idx) => (
+                <Text key={idx + 2}> {word}</Text>
+              ))}
+            </Text>
+          </View>
+        );
+      }
+      
+      // Words are equal length: render normally (first word on primary line)
+      return (
+        <Text style={[styles.word, { fontSize: settings.fontSize, fontFamily }]}>
+          <Text style={{ color: settings.wordColor }}>{firstWord}</Text>
+          {' '}
+          {accentCharIndex >= 0 ? (
+            <>
+              <Text style={{ color: settings.wordColor }}>{beforeAccent}</Text>
+              <Text style={[styles.accentLetter, { color: settings.accentColor }]}>{accentChar}</Text>
+              <Text style={{ color: settings.wordColor }}>{afterAccent}</Text>
+            </>
+          ) : (
+            <Text style={{ color: settings.wordColor }}>{secondWord}</Text>
+          )}
+          {words.length > 2 && words.slice(2).map((word, idx) => (
+            <Text key={idx + 2} style={{ color: settings.wordColor }}> {word}</Text>
+          ))}
+        </Text>
+      );
+    }
+    
+    // Single word rendering
+    const accentIndex = getAccentIndex(wordOrWords);
+    const before = wordOrWords.substring(0, accentIndex);
+    const accent = wordOrWords[accentIndex];
+    const after = wordOrWords.substring(accentIndex + 1);
 
     return (
       <Text style={[styles.word, { fontSize: settings.fontSize, fontFamily }]}>
@@ -872,16 +1096,27 @@ export default function RSVPReader({
     : 0;
 
   // Get previous and next words for display
+  // Account for words that are combined and displayed together
+  const displayInfo = getDisplayWords(currentWordIndex);
+  const numDisplayedWords = displayInfo.words.length;
+  const lastDisplayedWordIndex = currentWordIndex + numDisplayedWords - 1;
+  
   const prevWords: string[] = [];
   const nextWords: string[] = [];
   const wordsToShow = 3;
   
+  // Previous words: before the current display
   for (let i = 1; i <= wordsToShow; i++) {
     if (currentWordIndex - i >= 0) {
       prevWords.unshift(allWords[currentWordIndex - i]);
     }
-    if (currentWordIndex + i < allWords.length) {
-      nextWords.push(allWords[currentWordIndex + i]);
+  }
+  
+  // Next words: after the last displayed word
+  for (let i = 1; i <= wordsToShow; i++) {
+    const nextIndex = lastDisplayedWordIndex + i;
+    if (nextIndex < allWords.length) {
+      nextWords.push(allWords[nextIndex]);
     }
   }
 
@@ -2026,6 +2261,15 @@ const styles = StyleSheet.create({
   word: {
     fontWeight: 'bold',
     textAlign: 'center',
+  },
+  wordPairContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wordPairSmall: {
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: -5, // Slight overlap to bring closer to primary line
   },
   accentLetter: {
     // Color set dynamically
