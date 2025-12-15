@@ -34,6 +34,7 @@ export default function RSVPReader({
   const [customBackgroundColorInput, setCustomBackgroundColorInput] = useState('');
   const [customTextColorInput, setCustomTextColorInput] = useState('');
   const [customContextWordsColorInput, setCustomContextWordsColorInput] = useState('');
+  const isManuallyNavigatingRef = React.useRef(false);
 
   // Custom hooks
   const { settings, setSettings, getDisplayColors, addToRecentColors } = useSettings(initialWordsPerMinute);
@@ -42,12 +43,20 @@ export default function RSVPReader({
   const wordProcessing = useWordProcessing(chapters, settings, currentChapterIndex, onComplete);
 
   // Sync word processing state with progress state
+  // In speed view, wordProcessing is the source of truth
+  // In other views, progress hook is the source of truth
   React.useEffect(() => {
-    wordProcessing.setCurrentWordIndex(currentWordIndex);
-  }, [currentWordIndex]);
+    if (!isManuallyNavigatingRef.current && viewMode !== 'speed') {
+      // Only sync from progress to wordProcessing in non-speed views
+      wordProcessing.setCurrentWordIndex(currentWordIndex);
+    }
+  }, [currentWordIndex, viewMode, wordProcessing]);
 
   React.useEffect(() => {
-    setCurrentWordIndex(wordProcessing.currentWordIndex);
+    if (!isManuallyNavigatingRef.current) {
+      // Always sync from wordProcessing to progress (wordProcessing is always authoritative)
+      setCurrentWordIndex(wordProcessing.currentWordIndex);
+    }
   }, [wordProcessing.currentWordIndex]);
 
   const allWords = wordProcessing.allWords;
@@ -149,33 +158,96 @@ export default function RSVPReader({
   const handlePreviousChapter = () => {
     if (currentChapterIndex > 0) {
       wordProcessing.stopPlayback();
+      
+      const newChapterIndex = currentChapterIndex - 1;
       let wordCount = 0;
-      for (let i = 0; i < currentChapterIndex - 1; i++) {
+      for (let i = 0; i < newChapterIndex; i++) {
         wordCount += chapters[i].words.length;
       }
+      
+      // Set flag to prevent sync effects from interfering
+      isManuallyNavigatingRef.current = true;
+      
+      // Update word processing hook first (source of truth in speed view)
+      wordProcessing.setCurrentWordIndex(wordCount);
+      // Then update progress hook
       setCurrentWordIndex(wordCount);
+      // Finally update chapter index
+      setCurrentChapterIndex(newChapterIndex);
+      
+      // Reset flag after a brief delay to allow state updates to complete
+      requestAnimationFrame(() => {
+        isManuallyNavigatingRef.current = false;
+      });
     }
   };
 
-  const handleNextChapter = () => {
-    if (currentChapterIndex < chapters.length - 1) {
-      wordProcessing.stopPlayback();
-      let wordCount = 0;
-      for (let i = 0; i <= currentChapterIndex; i++) {
-        wordCount += chapters[i].words.length;
-      }
-      setCurrentWordIndex(wordCount);
+  const handleNextChapter = useCallback(() => {
+    const nextChapterIndex = currentChapterIndex + 1;
+    if (nextChapterIndex >= chapters.length) {
+      return; // Already at last chapter
     }
-  };
+    
+    // Stop playback first
+    wordProcessing.stopPlayback();
+    
+    // Calculate word index for the start of the next chapter
+    let wordCount = 0;
+    for (let i = 0; i < nextChapterIndex; i++) {
+      wordCount += chapters[i].words.length;
+    }
+    
+    // Ensure wordCount is within bounds
+    const maxWords = allWords.length;
+    if (wordCount >= maxWords) {
+      return; // Invalid calculation
+    }
+    
+    const targetWordIndex = wordCount;
+    
+    // Set flag synchronously BEFORE any state updates
+    isManuallyNavigatingRef.current = true;
+    
+    // Update chapter index first
+    setCurrentChapterIndex(nextChapterIndex);
+    
+    // Update word processing hook immediately (source of truth in speed view)
+    // This must happen before the sync effect runs
+    wordProcessing.setCurrentWordIndex(targetWordIndex);
+    
+    // Update progress hook
+    setCurrentWordIndex(targetWordIndex);
+    
+    // Reset flag after a longer delay to ensure all effects have completed
+    // The sync effects need time to see the flag and skip updating
+    setTimeout(() => {
+      isManuallyNavigatingRef.current = false;
+    }, 300);
+  }, [currentChapterIndex, chapters, allWords.length, wordProcessing]);
 
   const handleChapterSelect = (chapterIndex: number) => {
+    wordProcessing.stopPlayback();
+    
     let wordCount = 0;
     for (let i = 0; i < chapterIndex; i++) {
       wordCount += chapters[i].words.length;
     }
+    
+    // Set flag to prevent sync effects from interfering
+    isManuallyNavigatingRef.current = true;
+    
+    // Update word processing hook first
+    wordProcessing.setCurrentWordIndex(wordCount);
+    // Then update progress hook
     setCurrentWordIndex(wordCount);
+    // Finally update chapter index
+    setCurrentChapterIndex(chapterIndex);
     setShowChapterMenu(false);
-    wordProcessing.stopPlayback();
+    
+    // Reset flag after a brief delay to allow state updates to complete
+    requestAnimationFrame(() => {
+      isManuallyNavigatingRef.current = false;
+    });
   };
 
   const handleViewModeChange = useCallback((newMode: ViewMode) => {
@@ -205,30 +277,233 @@ export default function RSVPReader({
     setSelectedWordIndex(null);
   };
 
-  const handlePreviousParagraph = useCallback(() => {
-    const { paraStart } = paragraphBoundaries;
-    let prevParaStart = wordsBeforeChapterMemo;
-    for (let i = paraStart - 2; i >= wordsBeforeChapterMemo; i--) {
+  // Helper function to find actual paragraph boundaries based on line breaks or HTML tags
+  const findParagraphBoundaries = useCallback(() => {
+    const chapterStart = wordsBeforeChapterMemo;
+    const chapterEnd = chapterStart + currentChapter.words.length;
+    const currentWordInChapter = currentWordIndex - chapterStart;
+    
+    // Try to use rawText first (more reliable for paragraph detection)
+    if (currentChapter.rawText) {
+      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+      
+      // Find which paragraph contains the current word
+      let wordCount = 0;
+      let currentParaIndex = 0;
+      for (let i = 0; i < paragraphs.length; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        if (wordCount + paraWordCount > currentWordInChapter) {
+          currentParaIndex = i;
+          break;
+        }
+        wordCount += paraWordCount;
+        if (i === paragraphs.length - 1) currentParaIndex = i;
+      }
+      
+      // Calculate word indices for current paragraph
+      let paraStartWordCount = 0;
+      for (let i = 0; i < currentParaIndex; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        paraStartWordCount += paraWordCount;
+      }
+      
+      const currentParaWordCount = paragraphs[currentParaIndex].split(/\s+/).filter(w => w.trim()).length;
+      const paraEndWordCount = paraStartWordCount + currentParaWordCount;
+      
+      return {
+        paraStart: chapterStart + paraStartWordCount,
+        paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount),
+        currentParaIndex,
+        totalParagraphs: paragraphs.length
+      };
+    }
+    
+    // Fallback to HTML paragraph tags
+    if (currentChapter.htmlContent) {
+      const html = currentChapter.htmlContent;
+      const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
+      if (paraMatches && paraMatches.length > 0) {
+        let wordCount = 0;
+        let currentParaIndex = 0;
+        
+        for (let i = 0; i < paraMatches.length; i++) {
+          const text = paraMatches[i].replace(/<[^>]*>/g, '');
+          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+          if (wordCount + paraWordCount > currentWordInChapter) {
+            currentParaIndex = i;
+            break;
+          }
+          wordCount += paraWordCount;
+          if (i === paraMatches.length - 1) currentParaIndex = i;
+        }
+        
+        let paraStartWordCount = 0;
+        for (let i = 0; i < currentParaIndex; i++) {
+          const text = paraMatches[i].replace(/<[^>]*>/g, '');
+          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+          paraStartWordCount += paraWordCount;
+        }
+        
+        const currentParaText = paraMatches[currentParaIndex].replace(/<[^>]*>/g, '');
+        const currentParaWordCount = currentParaText.split(/\s+/).filter(w => w.trim()).length;
+        const paraEndWordCount = paraStartWordCount + currentParaWordCount;
+        
+        return {
+          paraStart: chapterStart + paraStartWordCount,
+          paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount),
+          currentParaIndex,
+          totalParagraphs: paraMatches.length
+        };
+      }
+    }
+    
+    // Fallback: use sentence endings if no paragraph structure found
+    let paraStart = chapterStart;
+    let paraEnd = chapterEnd;
+    
+    for (let i = currentWordIndex; i >= chapterStart; i--) {
       const word = allWords[i];
       if (word.match(/[.!?]$/)) {
-        prevParaStart = i + 1;
+        paraStart = i + 1;
         break;
       }
-      if (i === wordsBeforeChapterMemo) {
-        prevParaStart = wordsBeforeChapterMemo;
+      if (i === chapterStart) paraStart = i;
+    }
+    
+    for (let i = currentWordIndex; i < chapterEnd; i++) {
+      const word = allWords[i];
+      if (word.match(/[.!?]$/)) {
+        paraEnd = i + 1;
         break;
       }
     }
-    setCurrentWordIndex(prevParaStart);
-  }, [paragraphBoundaries, wordsBeforeChapterMemo, allWords]);
+    
+    return {
+      paraStart,
+      paraEnd,
+      currentParaIndex: 0,
+      totalParagraphs: 1
+    };
+  }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo, allWords]);
+
+  const handlePreviousParagraph = useCallback(() => {
+    const boundaries = findParagraphBoundaries();
+    const { currentParaIndex, totalParagraphs } = boundaries;
+    
+    if (currentParaIndex === 0) {
+      // Already at first paragraph, go to start of chapter
+      setCurrentWordIndex(wordsBeforeChapterMemo);
+      return;
+    }
+    
+    // Find the start of the previous paragraph
+    const prevParaIndex = currentParaIndex - 1;
+    const chapterStart = wordsBeforeChapterMemo;
+    
+    if (currentChapter.rawText) {
+      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+      let wordCount = 0;
+      for (let i = 0; i < prevParaIndex; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        wordCount += paraWordCount;
+      }
+      setCurrentWordIndex(chapterStart + wordCount);
+    } else if (currentChapter.htmlContent) {
+      const html = currentChapter.htmlContent;
+      const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
+      if (paraMatches && paraMatches.length > 0) {
+        let wordCount = 0;
+        for (let i = 0; i < prevParaIndex; i++) {
+          const text = paraMatches[i].replace(/<[^>]*>/g, '');
+          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+          wordCount += paraWordCount;
+        }
+        setCurrentWordIndex(chapterStart + wordCount);
+      }
+    }
+  }, [findParagraphBoundaries, currentChapter, wordsBeforeChapterMemo]);
 
   const handleNextParagraph = useCallback(() => {
-    const { paraEnd } = paragraphBoundaries;
-    const chapterEnd = wordsBeforeChapterMemo + currentChapter.words.length;
-    if (paraEnd < chapterEnd) {
-      setCurrentWordIndex(paraEnd);
+    const boundaries = findParagraphBoundaries();
+    const { currentParaIndex, totalParagraphs, paraEnd } = boundaries;
+    
+    if (currentParaIndex >= totalParagraphs - 1) {
+      // Already at last paragraph, stay at end
+      return;
     }
-  }, [paragraphBoundaries, wordsBeforeChapterMemo, currentChapter]);
+    
+    // Move to start of next paragraph (which is the end of current paragraph)
+    setCurrentWordIndex(paraEnd);
+  }, [findParagraphBoundaries]);
+
+  const handlePreviousPage = useCallback(() => {
+    if (!currentChapter?.rawText) return;
+    
+    const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+    const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
+    
+    // Find current paragraph index
+    let wordCount = 0;
+    let currentParaIndex = 0;
+    for (let i = 0; i < paragraphs.length; i++) {
+      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+      if (wordCount + paraWordCount > currentWordInChapter) {
+        currentParaIndex = i;
+        break;
+      }
+      wordCount += paraWordCount;
+      if (i === paragraphs.length - 1) currentParaIndex = i;
+    }
+    
+    // Move back 6 paragraphs (or to start of chapter)
+    const targetParaIndex = Math.max(0, currentParaIndex - 6);
+    
+    // Calculate word index for start of target paragraph
+    let targetWordCount = 0;
+    for (let i = 0; i < targetParaIndex; i++) {
+      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+      targetWordCount += paraWordCount;
+    }
+    
+    setCurrentWordIndex(wordsBeforeChapterMemo + targetWordCount);
+  }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo]);
+
+  const handleNextPage = useCallback(() => {
+    if (!currentChapter?.rawText) return;
+    
+    const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+    const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
+    
+    // Find current paragraph index
+    let wordCount = 0;
+    let currentParaIndex = 0;
+    for (let i = 0; i < paragraphs.length; i++) {
+      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+      if (wordCount + paraWordCount > currentWordInChapter) {
+        currentParaIndex = i;
+        break;
+      }
+      wordCount += paraWordCount;
+      if (i === paragraphs.length - 1) currentParaIndex = i;
+    }
+    
+    // Move forward 6 paragraphs (or to end of chapter)
+    const targetParaIndex = Math.min(paragraphs.length - 1, currentParaIndex + 6);
+    
+    // Calculate word index for start of target paragraph
+    let targetWordCount = 0;
+    for (let i = 0; i < targetParaIndex; i++) {
+      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+      targetWordCount += paraWordCount;
+    }
+    
+    const chapterEnd = wordsBeforeChapterMemo + currentChapter.words.length;
+    const targetIndex = wordsBeforeChapterMemo + targetWordCount;
+    
+    if (targetIndex < chapterEnd) {
+      setCurrentWordIndex(targetIndex);
+    }
+  }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo]);
 
   // Color picker handlers
   const handleColorPickerSelect = () => {
@@ -481,7 +756,7 @@ export default function RSVPReader({
             } else if (viewMode === 'paragraph') {
               handlePreviousParagraph();
             } else if (viewMode === 'page') {
-              handlePreviousChapter();
+              handlePreviousPage();
             }
           }}
           onPressIn={() => {
@@ -528,7 +803,7 @@ export default function RSVPReader({
             } else if (viewMode === 'paragraph') {
               handleNextParagraph();
             } else if (viewMode === 'page') {
-              handleNextChapter();
+              handleNextPage();
             }
           }}
           onPressIn={() => {

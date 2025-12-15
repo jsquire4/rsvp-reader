@@ -90,13 +90,86 @@ export const useWordProcessing = (
   }, [chapters, currentChapterIndex]);
 
   // Memoize paragraph boundaries to avoid recalculation
+  // Uses actual paragraph breaks (line breaks or HTML tags) instead of sentence endings
   const paragraphBoundaries = useMemo(() => {
     const currentChapter = chapters[currentChapterIndex];
     if (!currentChapter) return { paraStart: 0, paraEnd: 0 };
     
     const chapterStart = wordsBeforeChapterMemo;
     const chapterEnd = chapterStart + currentChapter.words.length;
+    const currentWordInChapter = currentWordIndex - chapterStart;
     
+    // Try to use rawText first (more reliable for paragraph detection)
+    if (currentChapter.rawText) {
+      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+      
+      // Find which paragraph contains the current word
+      let wordCount = 0;
+      let currentParaIndex = 0;
+      for (let i = 0; i < paragraphs.length; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        if (wordCount + paraWordCount > currentWordInChapter) {
+          currentParaIndex = i;
+          break;
+        }
+        wordCount += paraWordCount;
+        if (i === paragraphs.length - 1) currentParaIndex = i;
+      }
+      
+      // Calculate word indices for current paragraph
+      let paraStartWordCount = 0;
+      for (let i = 0; i < currentParaIndex; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        paraStartWordCount += paraWordCount;
+      }
+      
+      const currentParaWordCount = paragraphs[currentParaIndex].split(/\s+/).filter(w => w.trim()).length;
+      const paraEndWordCount = paraStartWordCount + currentParaWordCount;
+      
+      return {
+        paraStart: chapterStart + paraStartWordCount,
+        paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount)
+      };
+    }
+    
+    // Fallback to HTML paragraph tags
+    if (currentChapter.htmlContent) {
+      const html = currentChapter.htmlContent;
+      const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
+      if (paraMatches && paraMatches.length > 0) {
+        let wordCount = 0;
+        let currentParaIndex = 0;
+        
+        for (let i = 0; i < paraMatches.length; i++) {
+          const text = paraMatches[i].replace(/<[^>]*>/g, '');
+          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+          if (wordCount + paraWordCount > currentWordInChapter) {
+            currentParaIndex = i;
+            break;
+          }
+          wordCount += paraWordCount;
+          if (i === paraMatches.length - 1) currentParaIndex = i;
+        }
+        
+        let paraStartWordCount = 0;
+        for (let i = 0; i < currentParaIndex; i++) {
+          const text = paraMatches[i].replace(/<[^>]*>/g, '');
+          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+          paraStartWordCount += paraWordCount;
+        }
+        
+        const currentParaText = paraMatches[currentParaIndex].replace(/<[^>]*>/g, '');
+        const currentParaWordCount = currentParaText.split(/\s+/).filter(w => w.trim()).length;
+        const paraEndWordCount = paraStartWordCount + currentParaWordCount;
+        
+        return {
+          paraStart: chapterStart + paraStartWordCount,
+          paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount)
+        };
+      }
+    }
+    
+    // Fallback: use sentence endings if no paragraph structure found
     let paraStart = chapterStart;
     let paraEnd = chapterEnd;
     
