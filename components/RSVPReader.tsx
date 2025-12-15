@@ -355,12 +355,54 @@ export default function RSVPReader({
   // Calculate delay in milliseconds based on words per minute
   const delayMs = (60 / settings.wordsPerMinute) * 1000;
 
+  // Calculate swing variation based on word length
+  // Adds +/- 15% variation, biased toward longer words (slower) and shorter words (faster)
+  const calculateSwing = (word: string): number => {
+    if (!word || word.length === 0) return 0;
+    
+    // Remove punctuation to get actual word length
+    const cleanWord = word.replace(/[.,!?;:—–()[\]{}"'«‹»›]/g, '');
+    const wordLength = cleanWord.length;
+    
+    // Normalize word length to 0-1 scale (assuming words range from 1-15 characters typically)
+    // Cap at 15 for normalization, but allow longer words
+    const normalizedLength = Math.min(wordLength / 15, 1);
+    
+    // Generate random value between -0.15 and +0.15
+    const randomVariation = (Math.random() * 0.3) - 0.15; // Range: -0.15 to +0.15
+    
+    // Bias factor: shifts the random variation based on word length
+    // Short words (normalizedLength ~ 0): bias toward -0.15 (faster)
+    // Long words (normalizedLength ~ 1): bias toward +0.15 (slower)
+    // Medium words (normalizedLength ~ 0.5): neutral bias
+    const biasFactor = (normalizedLength - 0.5) * 0.2; // Range: -0.1 to +0.1
+    
+    // Combine random variation with bias
+    // The bias shifts the center of the random distribution
+    const swing = randomVariation + biasFactor;
+    
+    // Clamp to +/- 15% to ensure we stay within bounds
+    return Math.max(-0.15, Math.min(0.15, swing));
+  };
+
   // Calculate delay for current word based on punctuation
   // Punctuation pauses are ADDITIONAL to the base word delay
   const getWordDelay = (word: string, wordIndex: number): number => {
     if (!word || word.length === 0) return delayMs;
     
-    let totalDelay = delayMs; // Start with base word delay
+    // Check if word is hyphenated (contains hyphen)
+    const isHyphenated = /-/.test(word);
+    
+    // Apply swing to base delay (only affects the base word timing, not punctuation pauses)
+    const swingFactor = calculateSwing(word);
+    let baseDelayWithSwing = delayMs * (1 + swingFactor);
+    
+    // For hyphenated words, add the pause of two words combined (double the base delay)
+    if (isHyphenated) {
+      baseDelayWithSwing = delayMs * 2 * (1 + swingFactor);
+    }
+    
+    let totalDelay = baseDelayWithSwing; // Start with base word delay + swing (and double for hyphenated)
     
     // Check for opening quotation marks at the start of the word
     const startsWithQuote = /^["'«‹]/.test(word);
