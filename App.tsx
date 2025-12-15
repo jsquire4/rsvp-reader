@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, ActivityIndicator, Text, TouchableOpacity } from 'react-native';
 import BookSelector from './components/BookSelector';
-import RSVPReader from './components/RSVPReader';
+import RSVPReader from './components/RSVPReader/RSVPReader';
 import { parseEpub, Chapter } from './utils/epubParser';
 
 export default function App() {
