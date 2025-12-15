@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Image } from 'react-native';
 import { Asset } from 'expo-asset';
+import { extractBookMetadata, BookMetadata } from '../utils/epubParser';
 
 interface BookSelectorProps {
   onBookSelect: (bookUri: string) => void;
@@ -13,7 +14,7 @@ const BOOK_ASSETS = [
 ];
 
 export default function BookSelector({ onBookSelect }: BookSelectorProps) {
-  const [books, setBooks] = useState<Array<{ uri: string; name: string }>>([]);
+  const [books, setBooks] = useState<Array<{ uri: string; name: string; metadata: BookMetadata }>>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -28,24 +29,37 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
           const asset = Asset.fromModule(assetModule);
           await asset.downloadAsync();
           
-          // Extract filename from the module path or URI
-          let fileName = 'Unknown';
-          if (asset.uri) {
-            const uriParts = asset.uri.split('/');
-            fileName = uriParts[uriParts.length - 1] || 'Unknown';
+          const bookUri = asset.localUri || asset.uri;
+          
+          // Extract metadata from EPUB
+          const metadata = await extractBookMetadata(bookUri);
+          
+          // Use metadata title/author if available, otherwise use filename
+          let displayName = metadata.title || 'Unknown';
+          if (metadata.author) {
+            displayName = `${displayName}\nby ${metadata.author}`;
           }
           
-          // Clean up filename (remove .epub extension and format)
-          const displayName = fileName
-            .replace('.epub', '')
-            .replace(/-/g, ' ')
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
+          // Fallback to filename if no metadata
+          if (!metadata.title) {
+            let fileName = 'Unknown';
+            if (asset.uri) {
+              const uriParts = asset.uri.split('/');
+              fileName = uriParts[uriParts.length - 1] || 'Unknown';
+            }
+            
+            displayName = fileName
+              .replace('.epub', '')
+              .replace(/-/g, ' ')
+              .split(' ')
+              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+              .join(' ');
+          }
           
           return {
-            uri: asset.localUri || asset.uri,
+            uri: bookUri,
             name: displayName,
+            metadata,
           };
         })
       );
@@ -89,12 +103,20 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
         data={books}
         keyExtractor={(item) => item.uri}
         renderItem={({ item }) => {
+          // Cover image URI is relative to EPUB, so we can't directly load it
+          // For now, show placeholder or skip cover until we implement EPUB image extraction
           return (
             <TouchableOpacity
               style={styles.bookItem}
               onPress={() => onBookSelect(item.uri)}
             >
-              <Text style={styles.bookTitle}>{item.name}</Text>
+              <View style={styles.bookCoverPlaceholder}>
+                <Text style={styles.bookCoverText}>📖</Text>
+              </View>
+              <Text style={styles.bookTitle}>{item.metadata.title || item.name.split('\n')[0]}</Text>
+              {item.metadata.author && (
+                <Text style={styles.bookAuthor}>by {item.metadata.author}</Text>
+              )}
             </TouchableOpacity>
           );
         }}
@@ -135,10 +157,37 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 8,
     marginBottom: 10,
+    alignItems: 'center',
+  },
+  bookCoverPlaceholder: {
+    width: 150,
+    height: 200,
+    marginBottom: 15,
+    borderRadius: 4,
+    backgroundColor: '#444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bookCoverText: {
+    fontSize: 60,
+  },
+  bookCover: {
+    width: 150,
+    height: 200,
+    marginBottom: 15,
+    borderRadius: 4,
   },
   bookTitle: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 20,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  bookAuthor: {
+    color: '#999',
+    fontSize: 16,
+    textAlign: 'center',
   },
   refreshButton: {
     backgroundColor: '#555',

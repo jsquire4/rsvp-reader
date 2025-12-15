@@ -9,11 +9,13 @@ export default function App() {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentBookUri, setCurrentBookUri] = useState<string | null>(null);
 
   const handleBookSelect = async (bookUri: string) => {
     setLoading(true);
     setError(null);
     setChapters([]);
+    setCurrentBookUri(bookUri);
 
     try {
       const parsedChapters = await parseEpub(bookUri);
@@ -29,6 +31,7 @@ export default function App() {
   const handleBack = () => {
     setChapters([]);
     setError(null);
+    setCurrentBookUri(null);
   };
 
   if (loading) {
@@ -60,7 +63,7 @@ export default function App() {
         <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Text style={styles.buttonText}>← Back</Text>
         </TouchableOpacity>
-        <RSVPReader chapters={chapters} initialWordsPerMinute={250} />
+        <RSVPReader chapters={chapters} initialWordsPerMinute={250} bookUri={currentBookUri || undefined} />
       </View>
     );
   }

@@ -7,6 +7,81 @@ export interface Chapter {
   title: string;
   words: string[];
   wordCount: number;
+  htmlContent?: string; // Preserved HTML content for paragraph/page views
+  rawText?: string; // Raw text with paragraph breaks preserved
+}
+
+export interface BookMetadata {
+  title?: string;
+  author?: string;
+  coverImageUri?: string;
+}
+
+/**
+ * Extracts book metadata (title, author, cover) from EPUB
+ */
+export async function extractBookMetadata(epubUri: string): Promise<BookMetadata> {
+  try {
+    let bytes: Uint8Array;
+    
+    if (epubUri.startsWith('http://') || epubUri.startsWith('https://') || Platform.OS === 'web') {
+      const response = await fetch(epubUri);
+      const arrayBuffer = await response.arrayBuffer();
+      bytes = new Uint8Array(arrayBuffer);
+    } else {
+      const epubFile = new File(epubUri);
+      const arrayBuffer = await epubFile.arrayBuffer();
+      bytes = new Uint8Array(arrayBuffer);
+    }
+    
+    const zip = await JSZip.loadAsync(bytes);
+    const parser = new DOMParser();
+    
+    const containerXml = await zip.file('META-INF/container.xml')?.async('string');
+    if (!containerXml) return {};
+    
+    const containerDoc = parser.parseFromString(containerXml, 'text/xml');
+    const rootfileElement = containerDoc.getElementsByTagName('rootfile')[0];
+    const opfPath = rootfileElement?.getAttribute('full-path');
+    if (!opfPath) return {};
+    
+    const opfContent = await zip.file(opfPath)?.async('string');
+    if (!opfContent) return {};
+    
+    const opfDoc = parser.parseFromString(opfContent, 'text/xml');
+    const metadata = opfDoc.getElementsByTagName('metadata')[0];
+    
+    const title = metadata?.getElementsByTagName('dc:title')[0]?.textContent || 
+                 metadata?.getElementsByTagName('title')[0]?.textContent;
+    const author = metadata?.getElementsByTagName('dc:creator')[0]?.textContent ||
+                   metadata?.getElementsByTagName('creator')[0]?.textContent;
+    
+    // Try to find cover image
+    let coverImageUri: string | undefined;
+    const manifest = opfDoc.getElementsByTagName('manifest')[0];
+    if (manifest) {
+      const items = manifest.getElementsByTagName('item');
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const id = item.getAttribute('id');
+        const href = item.getAttribute('href');
+        const mediaType = item.getAttribute('media-type');
+        
+        if (id && (id.toLowerCase().includes('cover') || mediaType?.startsWith('image/'))) {
+          if (href) {
+            const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/') + 1);
+            coverImageUri = opfDir + href;
+            break;
+          }
+        }
+      }
+    }
+    
+    return { title, author, coverImageUri };
+  } catch (error) {
+    console.error('Error extracting metadata:', error);
+    return {};
+  }
 }
 
 /**
@@ -117,16 +192,60 @@ export async function parseEpub(epubUri: string): Promise<Chapter[]> {
         const textContent = extractTextFromElement(doc.documentElement);
         if (textContent.trim()) {
           const words = textToWords([textContent]);
+          // Preserve HTML content for paragraph/page views
+          const bodyElement = doc.getElementsByTagName('body')[0] || doc.documentElement;
+          const htmlContent = extractHTMLContent(bodyElement);
+          // Preserve raw text with paragraph breaks
+          const rawText = extractTextWithBreaks(doc.documentElement);
           chapters.push({
             title: title || `Chapter ${chapters.length + 1}`,
             words,
             wordCount: words.length,
+            htmlContent: htmlContent || undefined,
+            rawText: rawText || undefined,
           });
         }
       }
     }
 
-    return chapters;
+    // Filter out table of contents, copyright, and publisher info
+    // Keep: Title, Author, Forward, Prelude, Chapter 1+
+    const filteredChapters = chapters.filter((chapter, index) => {
+      const titleLower = chapter.title.toLowerCase();
+      
+      // Skip table of contents
+      if (titleLower.includes('table of contents') || titleLower.includes('contents')) {
+        return false;
+      }
+      
+      // Skip copyright and publisher info
+      if (titleLower.includes('copyright') || 
+          titleLower.includes('publisher') ||
+          titleLower.includes('published by') ||
+          titleLower.includes('all rights reserved')) {
+        return false;
+      }
+      
+      // Keep title, author, forward, prelude, and chapters
+      if (titleLower.includes('title') || 
+          titleLower.includes('author') ||
+          titleLower.includes('forward') ||
+          titleLower.includes('prelude') ||
+          titleLower.includes('chapter') ||
+          /^\d+$/.test(chapter.title.trim())) {
+        return true;
+      }
+      
+      // For other chapters, check if they have substantial content
+      // Skip very short chapters that are likely metadata
+      if (chapter.words.length < 50) {
+        return false;
+      }
+      
+      return true;
+    });
+
+    return filteredChapters;
   } catch (error) {
     console.error('Error parsing EPUB:', error);
     throw error;
@@ -157,6 +276,81 @@ function extractTextFromElement(element: Element | null): string {
         text += nodeValue.replace(/\s+/g, ' ').trim() + ' ';
       } else if (node.nodeType === 1) { // Element node
         text += extractTextFromElement(node as Element);
+      }
+    }
+  }
+
+  return text;
+}
+
+/**
+ * Extracts HTML content preserving structure and formatting
+ */
+function extractHTMLContent(element: Element | null): string {
+  if (!element) return '';
+
+  const tagName = element.tagName?.toLowerCase();
+  if (tagName === 'script' || tagName === 'style' || tagName === 'meta') {
+    return '';
+  }
+
+  let html = '';
+  
+  if (element.childNodes) {
+    for (let i = 0; i < element.childNodes.length; i++) {
+      const node = element.childNodes[i];
+      if (node.nodeType === 3) { // Text node
+        html += (node.nodeValue || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      } else if (node.nodeType === 1) { // Element node
+        const el = node as Element;
+        const childTag = el.tagName?.toLowerCase();
+        
+        // Preserve important formatting tags
+        if (['p', 'div', 'br', 'strong', 'b', 'em', 'i', 'u', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(childTag)) {
+          const attrs = Array.from(el.attributes).map(attr => `${attr.name}="${attr.value}"`).join(' ');
+          const openTag = attrs ? `<${childTag} ${attrs}>` : `<${childTag}>`;
+          html += openTag + extractHTMLContent(el) + `</${childTag}>`;
+        } else {
+          html += extractHTMLContent(el);
+        }
+      }
+    }
+  }
+
+  return html;
+}
+
+/**
+ * Extracts text with paragraph breaks preserved
+ */
+function extractTextWithBreaks(element: Element | null): string {
+  if (!element) return '';
+
+  const tagName = element.tagName?.toLowerCase();
+  if (tagName === 'script' || tagName === 'style' || tagName === 'meta') {
+    return '';
+  }
+
+  let text = '';
+  
+  if (element.childNodes) {
+    for (let i = 0; i < element.childNodes.length; i++) {
+      const node = element.childNodes[i];
+      if (node.nodeType === 3) { // Text node
+        text += node.nodeValue || '';
+      } else if (node.nodeType === 1) { // Element node
+        const el = node as Element;
+        const childTag = el.tagName?.toLowerCase();
+        
+        // Add line breaks for paragraph and div tags
+        if (childTag === 'p' || childTag === 'div') {
+          if (text && !text.endsWith('\n\n')) {
+            text += '\n\n';
+          }
+        } else if (childTag === 'br') {
+          text += '\n';
+        }
+        text += extractTextWithBreaks(el);
       }
     }
   }

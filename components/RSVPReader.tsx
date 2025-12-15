@@ -1,27 +1,57 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, FlatList, ScrollView } from 'react-native';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, FlatList, ScrollView, TextInput, Switch, Platform } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import Slider from '@react-native-community/slider';
+import RenderHTML from 'react-native-render-html';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Chapter } from '../utils/epubParser';
 
 interface RSVPReaderProps {
   chapters: Chapter[];
   initialWordsPerMinute?: number;
   onComplete?: () => void;
+  bookUri?: string; // Book URI for saving progress
 }
 
 interface Settings {
   accentColor: string;
   fontFamily: string;
   fontSize: number;
+  backgroundColor: string;
+  textColor: string;
+  contextWordsColor: string;
+  showContextWords: boolean;
+  contextWordsSpacing: number;
+  wordColor: string;
 }
 
-const ACCENT_COLORS = [
+const COMMON_COLORS = [
   { name: 'Green', value: '#00ff88' },
   { name: 'Yellow', value: '#ffeb3b' },
   { name: 'Cyan', value: '#00bcd4' },
   { name: 'Orange', value: '#ff9800' },
   { name: 'Pink', value: '#e91e63' },
   { name: 'Blue', value: '#2196f3' },
+  { name: 'Red', value: '#f44336' },
+  { name: 'Purple', value: '#9c27b0' },
+  { name: 'White', value: '#ffffff' },
+  { name: 'Black', value: '#000000' },
+];
+
+const BACKGROUND_COLORS = [
+  { name: 'Black', value: '#000000' },
+  { name: 'Dark Gray', value: '#1a1a1a' },
+  { name: 'Gray', value: '#2a2a2a' },
+  { name: 'Navy', value: '#0a0a1a' },
+  { name: 'Dark Blue', value: '#0a1a2a' },
+];
+
+const TEXT_COLORS = [
+  { name: 'White', value: '#ffffff' },
+  { name: 'Light Gray', value: '#e0e0e0' },
+  { name: 'Beige', value: '#f5f5dc' },
+  { name: 'Light Blue', value: '#add8e6' },
+  { name: 'Yellow', value: '#ffffcc' },
 ];
 
 const FONT_FAMILIES = [
@@ -30,6 +60,31 @@ const FONT_FAMILIES = [
   'Helvetica',
   'Times New Roman',
   'Courier New',
+  'Georgia',
+  'Verdana',
+  'Trebuchet MS',
+  'Palatino',
+  'Garamond',
+  'Bookman',
+  'Comic Sans MS',
+  'Impact',
+  'Lucida Console',
+  'Tahoma',
+  'Courier',
+  'Monaco',
+  'Menlo',
+  'Consolas',
+  'Roboto',
+  'Open Sans',
+  'Lato',
+  'Montserrat',
+  'Raleway',
+  'Oswald',
+  'Source Sans Pro',
+  'PT Sans',
+  'Ubuntu',
+  'Playfair Display',
+  'Merriweather',
 ];
 
 type ViewMode = 'speed' | 'paragraph' | 'page';
@@ -37,11 +92,13 @@ type ViewMode = 'speed' | 'paragraph' | 'page';
 export default function RSVPReader({ 
   chapters, 
   initialWordsPerMinute = 250,
-  onComplete 
+  onComplete,
+  bookUri 
 }: RSVPReaderProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('speed');
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
+  const [isLoadingProgress, setIsLoadingProgress] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [wordsPerMinute, setWordsPerMinute] = useState(Math.round(initialWordsPerMinute));
   const [showSettings, setShowSettings] = useState(false);
@@ -52,22 +109,70 @@ export default function RSVPReader({
     accentColor: '#00ff88',
     fontFamily: 'System',
     fontSize: 48,
+    backgroundColor: '#000000',
+    textColor: '#ffffff',
+    contextWordsColor: '#999999',
+    showContextWords: true,
+    contextWordsSpacing: 10,
+    wordColor: '#ffffff',
   });
+  const [customAccentColorInput, setCustomAccentColorInput] = useState('');
+  const [customWordColorInput, setCustomWordColorInput] = useState('');
+  const [customBackgroundColorInput, setCustomBackgroundColorInput] = useState('');
+  const [customTextColorInput, setCustomTextColorInput] = useState('');
+  const [customContextWordsColorInput, setCustomContextWordsColorInput] = useState('');
   const [tooltip, setTooltip] = useState<string | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // Auto-reduce font size for paragraph and page views
-  const getEffectiveFontSize = () => {
-    if (viewMode === 'paragraph' || viewMode === 'page') {
-      return Math.max(16, settings.fontSize * 0.6); // 60% of speed reading size, minimum 16pt
-    }
-    return settings.fontSize;
-  };
 
   // Flatten all words from all chapters for continuous reading
   const allWords = chapters.flatMap(ch => ch.words);
   const currentChapter = chapters[currentChapterIndex];
   const currentWord = allWords[currentWordIndex] || '';
+
+  // Load saved progress on mount
+  useEffect(() => {
+    const loadProgress = async () => {
+      if (!bookUri || chapters.length === 0) {
+        setIsLoadingProgress(false);
+        return;
+      }
+      
+      try {
+        const savedProgress = await AsyncStorage.getItem(`book_progress_${bookUri}`);
+        if (savedProgress) {
+          const { chapterIndex, wordIndex } = JSON.parse(savedProgress);
+          if (chapterIndex >= 0 && chapterIndex < chapters.length && wordIndex >= 0) {
+            setCurrentChapterIndex(chapterIndex);
+            setCurrentWordIndex(wordIndex);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading progress:', error);
+      } finally {
+        setIsLoadingProgress(false);
+      }
+    };
+    
+    loadProgress();
+  }, [bookUri, chapters.length]);
+
+  // Save progress whenever it changes
+  useEffect(() => {
+    if (!bookUri || isLoadingProgress || chapters.length === 0) return;
+    
+    const saveProgress = async () => {
+      try {
+        await AsyncStorage.setItem(`book_progress_${bookUri}`, JSON.stringify({
+          chapterIndex: currentChapterIndex,
+          wordIndex: currentWordIndex,
+        }));
+      } catch (error) {
+        console.error('Error saving progress:', error);
+      }
+    };
+    
+    saveProgress();
+  }, [bookUri, currentChapterIndex, currentWordIndex, isLoadingProgress, chapters.length]);
 
   // Calculate delay in milliseconds based on words per minute
   const delayMs = (60 / wordsPerMinute) * 1000;
@@ -83,6 +188,8 @@ export default function RSVPReader({
 
   // Find which chapter the current word belongs to
   useEffect(() => {
+    if (isLoadingProgress || chapters.length === 0) return;
+    
     let wordCount = 0;
     for (let i = 0; i < chapters.length; i++) {
       const chapterEnd = wordCount + chapters[i].words.length;
@@ -94,7 +201,7 @@ export default function RSVPReader({
       }
       wordCount = chapterEnd;
     }
-  }, [currentWordIndex, chapters, currentChapterIndex]);
+  }, [currentWordIndex, chapters, currentChapterIndex, isLoadingProgress]);
 
   useEffect(() => {
     if (isPlaying && currentWordIndex < allWords.length) {
@@ -179,7 +286,8 @@ export default function RSVPReader({
     setIsPlaying(false);
   };
 
-  const handleViewModeChange = (newMode: ViewMode) => {
+  const handleViewModeChange = useCallback((newMode: ViewMode) => {
+    // Immediately update view mode for instant feedback
     if (newMode === 'speed' && viewMode !== 'speed') {
       // If coming from paragraph/page view and word is selected, use that
       if (selectedWordIndex !== null) {
@@ -192,10 +300,15 @@ export default function RSVPReader({
         setShowWordSelection(true);
       }
     } else {
+      // Immediate mode switch - works for all transitions including speed -> page/paragraph
       setViewMode(newMode);
       setIsPlaying(false);
+      // Clear selection when switching away from paragraph/page views
+      if (newMode === 'speed') {
+        setSelectedWordIndex(null);
+      }
     }
-  };
+  }, [viewMode, selectedWordIndex]);
 
   const handleWordSelectionConfirm = (wordIndex: number) => {
     setCurrentWordIndex(wordIndex);
@@ -211,10 +324,14 @@ export default function RSVPReader({
     }
   };
 
-  // Get paragraph boundaries
-  const getParagraphBoundaries = () => {
-    const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-    const chapterStart = wordsBeforeChapter;
+  // Memoize words before chapter (needed for other calculations)
+  const wordsBeforeChapterMemo = useMemo(() => {
+    return chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
+  }, [chapters, currentChapterIndex]);
+
+  // Memoize paragraph boundaries to avoid recalculation
+  const paragraphBoundaries = useMemo(() => {
+    const chapterStart = wordsBeforeChapterMemo;
     const chapterEnd = chapterStart + currentChapter.words.length;
     
     let paraStart = chapterStart;
@@ -238,40 +355,119 @@ export default function RSVPReader({
     }
     
     return { paraStart, paraEnd };
-  };
+  }, [currentWordIndex, currentChapterIndex, allWords, currentChapter, wordsBeforeChapterMemo]);
+
+  // Memoize paragraph text
+  const paragraphText = useMemo(() => {
+    return allWords.slice(paragraphBoundaries.paraStart, paragraphBoundaries.paraEnd).join(' ');
+  }, [allWords, paragraphBoundaries]);
+
+  // Memoize paragraph HTML - extract only current paragraph (optimized)
+  const paragraphHTML = useMemo(() => {
+    if (!currentChapter?.htmlContent) return null;
+    
+    // Use paragraph boundaries to find the paragraph in HTML
+    const { paraStart, paraEnd } = paragraphBoundaries;
+    const wordsBeforeChapter = wordsBeforeChapterMemo;
+    const paraStartInChapter = paraStart - wordsBeforeChapter;
+    const paraEndInChapter = paraEnd - wordsBeforeChapter;
+    
+    // Extract text up to paragraph start to count words in HTML
+    // This is faster than parsing all HTML
+    const html = currentChapter.htmlContent;
+    
+    // Simple approach: find paragraph tags and extract the one containing our word range
+    // Split by <p> or <div> tags
+    const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
+    if (!paraMatches || paraMatches.length === 0) return null;
+    
+    // Count words in each paragraph to find the right one
+    let wordCount = 0;
+    let targetPara = paraMatches[0]; // Default to first paragraph
+    
+    for (const para of paraMatches) {
+      const text = para.replace(/<[^>]*>/g, '');
+      const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+      
+      if (wordCount + paraWordCount > paraStartInChapter) {
+        targetPara = para;
+        break;
+      }
+      wordCount += paraWordCount;
+    }
+    
+    return targetPara || null;
+  }, [currentChapter, paragraphBoundaries, wordsBeforeChapterMemo]);
+
+  // Memoize page text - limit to 5-6 paragraphs
+  const pageText = useMemo(() => {
+    if (currentChapter.rawText) {
+      // Split by double newlines (paragraphs)
+      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+      // Find which paragraph contains current word
+      const wordsBeforeChapter = wordsBeforeChapterMemo;
+      const currentWordInChapter = currentWordIndex - wordsBeforeChapter;
+      
+      // Find paragraph index containing current word
+      let wordCount = 0;
+      let currentParaIndex = 0;
+      for (let i = 0; i < paragraphs.length; i++) {
+        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
+        if (wordCount + paraWordCount > currentWordInChapter) {
+          currentParaIndex = i;
+          break;
+        }
+        wordCount += paraWordCount;
+        if (i === paragraphs.length - 1) currentParaIndex = i;
+      }
+      
+      // Get 5-6 paragraphs starting from current paragraph
+      const startIndex = Math.max(0, currentParaIndex);
+      const endIndex = Math.min(paragraphs.length, startIndex + 6);
+      return paragraphs.slice(startIndex, endIndex).join('\n\n');
+    }
+    // Fallback to words if no rawText
+    return currentChapter.words.join(' ');
+  }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo]);
+
+  // Memoize effective font size
+  const effectiveFontSize = useMemo(() => {
+    if (viewMode === 'paragraph' || viewMode === 'page') {
+      return Math.max(16, settings.fontSize * 0.6);
+    }
+    return settings.fontSize;
+  }, [viewMode, settings.fontSize]);
 
   // Navigate to previous paragraph
-  const handlePreviousParagraph = () => {
-    const { paraStart } = getParagraphBoundaries();
-    const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
+  const handlePreviousParagraph = useCallback(() => {
+    const { paraStart } = paragraphBoundaries;
     
     // Find previous paragraph start
-    let prevParaStart = wordsBeforeChapter;
-    for (let i = paraStart - 2; i >= wordsBeforeChapter; i--) {
+    let prevParaStart = wordsBeforeChapterMemo;
+    for (let i = paraStart - 2; i >= wordsBeforeChapterMemo; i--) {
       const word = allWords[i];
       if (word.match(/[.!?]$/)) {
         prevParaStart = i + 1;
         break;
       }
-      if (i === wordsBeforeChapter) {
-        prevParaStart = wordsBeforeChapter;
+      if (i === wordsBeforeChapterMemo) {
+        prevParaStart = wordsBeforeChapterMemo;
         break;
       }
     }
     
     setCurrentWordIndex(prevParaStart);
-  };
+  }, [paragraphBoundaries, wordsBeforeChapterMemo, allWords]);
 
   // Navigate to next paragraph
-  const handleNextParagraph = () => {
-    const { paraEnd } = getParagraphBoundaries();
-    const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-    const chapterEnd = wordsBeforeChapter + currentChapter.words.length;
+  const handleNextParagraph = useCallback(() => {
+    const { paraEnd } = paragraphBoundaries;
+    const chapterEnd = wordsBeforeChapterMemo + currentChapter.words.length;
     
     if (paraEnd < chapterEnd) {
       setCurrentWordIndex(paraEnd);
     }
-  };
+  }, [paragraphBoundaries, wordsBeforeChapterMemo, currentChapter]);
 
   // Navigate to previous page (chapter)
   const handlePreviousPage = () => {
@@ -281,17 +477,6 @@ export default function RSVPReader({
   // Navigate to next page (chapter)
   const handleNextPage = () => {
     handleNextChapter();
-  };
-
-  // Get paragraph text around current word
-  const getParagraphText = () => {
-    const { paraStart, paraEnd } = getParagraphBoundaries();
-    return allWords.slice(paraStart, paraEnd).join(' ');
-  };
-
-  // Get page text (current chapter)
-  const getPageText = () => {
-    return currentChapter.words.join(' ');
   };
 
   // Calculate accent letter position based on word length
@@ -334,7 +519,7 @@ export default function RSVPReader({
 
   // Render word with color accent on dynamically positioned letter
   const renderWordWithAccent = (word: string) => {
-    if (!word || word.length === 0) return <Text style={[styles.word, { fontSize: settings.fontSize }]}>{word}</Text>;
+    if (!word || word.length === 0) return <Text style={[styles.word, { fontSize: settings.fontSize, color: settings.wordColor }]}>{word}</Text>;
     
     const accentIndex = getAccentIndex(word);
     const before = word.substring(0, accentIndex);
@@ -345,9 +530,9 @@ export default function RSVPReader({
 
     return (
       <Text style={[styles.word, { fontSize: settings.fontSize, fontFamily }]}>
-        <Text>{before}</Text>
+        <Text style={{ color: settings.wordColor }}>{before}</Text>
         <Text style={[styles.accentLetter, { color: settings.accentColor }]}>{accent}</Text>
-        <Text>{after}</Text>
+        <Text style={{ color: settings.wordColor }}>{after}</Text>
       </Text>
     );
   };
@@ -367,8 +552,7 @@ export default function RSVPReader({
   };
 
   // Calculate current word index within chapter
-  const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-  const currentWordInChapter = currentWordIndex - wordsBeforeChapter + 1;
+  const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo + 1;
   const totalWordsInChapter = currentChapter?.words.length || 0;
   const bookRemainingPercent = allWords.length > 0 
     ? Math.round(((allWords.length - currentWordIndex - 1) / allWords.length) * 100)
@@ -389,7 +573,7 @@ export default function RSVPReader({
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: settings.backgroundColor }]}>
       {/* Chapter name at top */}
       {currentChapter?.title && (
         <View style={styles.chapterNameContainer}>
@@ -397,94 +581,163 @@ export default function RSVPReader({
         </View>
       )}
 
+      {/* Progress bar */}
+      <View style={styles.progressContainer}>
+        <Slider
+          style={styles.progressSlider}
+          minimumValue={0}
+          maximumValue={allWords.length - 1}
+          value={currentWordIndex}
+          onValueChange={(value) => {
+            setCurrentWordIndex(Math.round(value));
+            setIsPlaying(false);
+          }}
+          minimumTrackTintColor={settings.accentColor}
+          maximumTrackTintColor="#333"
+          thumbTintColor={settings.accentColor}
+          step={1}
+        />
+        <Text style={styles.progressText}>
+          {currentWordInChapter} / {totalWordsInChapter} • {bookRemainingPercent}% remaining
+        </Text>
+      </View>
+
       {/* Reader area - different views */}
-      <View style={styles.readerArea}>
+      <View style={viewMode === 'speed' ? styles.readerAreaSpeed : styles.readerArea}>
         {viewMode === 'speed' && (
-          <View style={styles.readerContent}>
+          <View style={styles.readerContentSpeed}>
             {/* Previous words with fade effect - horizontal layout */}
-            <View style={styles.contextWordsLeft}>
-              <Text style={styles.contextWordsContainer} numberOfLines={1}>
-                {prevWords.map((word, idx) => {
-                  // Left side: fade left (idx=0 furthest left = lowest opacity, idx=2 closest to center = highest opacity)
-                  // Opacity increases as idx increases (closer to center)
-                  const opacity = Math.max(0.1, 0.1 + (idx / wordsToShow) * 0.5);
-                  const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
-                  return (
-                    <Text 
-                      key={`prev-${idx}`} 
-                      style={[
-                        styles.contextWord, 
-                        { 
-                          opacity, 
-                          fontSize: settings.fontSize,
-                          fontFamily,
-                        }
-                      ]}
-                    >
-                      {word}{idx < prevWords.length - 1 ? ' ' : ''}
-                    </Text>
-                  );
-                })}
-              </Text>
-            </View>
+            {settings.showContextWords && (
+              <View style={styles.contextWordsLeft}>
+                <Text style={styles.contextWordsContainer} numberOfLines={1}>
+                  {prevWords.map((word, idx) => {
+                    // Left side: fade left (idx=0 furthest left = lowest opacity, idx=2 closest to center = highest opacity)
+                    // Opacity increases as idx increases (closer to center)
+                    const opacity = Math.max(0.1, 0.1 + (idx / wordsToShow) * 0.5);
+                    const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
+                    return (
+                      <Text 
+                        key={`prev-${idx}`} 
+                        style={[
+                          styles.contextWord, 
+                          { 
+                            opacity, 
+                            fontSize: settings.fontSize,
+                            fontFamily,
+                            color: settings.contextWordsColor,
+                          }
+                        ]}
+                      >
+                        {word}{idx < prevWords.length - 1 ? ' ' : ''}
+                      </Text>
+                    );
+                  })}
+                </Text>
+              </View>
+            )}
 
             {/* Current word */}
-            <View style={styles.currentWordContainer}>
+            <View style={[
+              styles.currentWordContainer,
+              {
+                // User-adjustable spacing
+                paddingHorizontal: settings.contextWordsSpacing,
+              }
+            ]}>
               {renderWordWithAccent(currentWord)}
             </View>
 
             {/* Next words with fade effect - horizontal layout */}
-            <View style={styles.contextWordsRight}>
-              <Text style={styles.contextWordsContainer} numberOfLines={1}>
-                {nextWords.map((word, idx) => {
-                  // Right side: fade right (idx=0 closest to center = highest opacity, idx=2 furthest right = lowest opacity)
-                  const distanceFromRightEdge = idx + 1;
-                  const opacity = Math.max(0.1, 0.6 - (distanceFromRightEdge / wordsToShow) * 0.5);
-                  const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
-                  return (
-                    <Text 
-                      key={`next-${idx}`} 
-                      style={[
-                        styles.contextWord, 
-                        { 
-                          opacity, 
-                          fontSize: settings.fontSize,
-                          fontFamily,
-                        }
-                      ]}
-                    >
-                      {idx > 0 ? ' ' : ''}{word}
-                    </Text>
-                  );
-                })}
-              </Text>
-            </View>
+            {settings.showContextWords && (
+              <View style={styles.contextWordsRight}>
+                <Text style={styles.contextWordsContainer} numberOfLines={1}>
+                  {nextWords.map((word, idx) => {
+                    // Right side: fade right (idx=0 closest to center = highest opacity, idx=2 furthest right = lowest opacity)
+                    const distanceFromRightEdge = idx + 1;
+                    const opacity = Math.max(0.1, 0.6 - (distanceFromRightEdge / wordsToShow) * 0.5);
+                    const fontFamily = settings.fontFamily === 'System' ? undefined : settings.fontFamily;
+                    return (
+                      <Text 
+                        key={`next-${idx}`} 
+                        style={[
+                          styles.contextWord, 
+                          { 
+                            opacity, 
+                            fontSize: settings.fontSize,
+                            fontFamily,
+                            color: settings.contextWordsColor,
+                          }
+                        ]}
+                      >
+                        {idx > 0 ? ' ' : ''}{word}
+                      </Text>
+                    );
+                  })}
+                </Text>
+              </View>
+            )}
           </View>
         )}
         
         {viewMode === 'paragraph' && (
-          <ScrollView style={styles.textView} contentContainerStyle={styles.textViewContent}>
-            <View style={styles.centeredTextView}>
-              <Text style={[styles.paragraphText, { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
-                {getParagraphText().split(' ').map((word, idx) => {
-                  const { paraStart } = getParagraphBoundaries();
-                  const wordIndex = paraStart + idx;
-                  const isSelected = selectedWordIndex === wordIndex;
-                  return (
-                    <Text
-                      key={idx}
-                      onPress={() => handleWordPress(wordIndex)}
-                      style={[
-                        { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily },
-                        isSelected && { backgroundColor: settings.accentColor + '40', color: settings.accentColor }
-                      ]}
-                    >
-                      {word}{idx < getParagraphText().split(' ').length - 1 ? ' ' : ''}
-                    </Text>
-                  );
-                })}
-              </Text>
-            </View>
+          <View style={styles.textViewContainer}>
+            <ScrollView 
+              style={styles.textView} 
+              contentContainerStyle={styles.textViewContent}
+              scrollEnabled={true}
+              showsVerticalScrollIndicator={true}
+            >
+              <View style={styles.centeredTextView}>
+                {paragraphHTML ? (
+                  <RenderHTML
+                    contentWidth={800}
+                    source={{ html: paragraphHTML }}
+                    baseStyle={{
+                      color: settings.textColor,
+                      fontSize: effectiveFontSize,
+                      fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
+                      textAlign: 'left',
+                      lineHeight: effectiveFontSize * 1.5,
+                    }}
+                    tagsStyles={{
+                      p: { marginBottom: effectiveFontSize * 0.8, marginTop: effectiveFontSize * 0.4 },
+                      div: { marginBottom: effectiveFontSize * 0.8 },
+                      br: { height: effectiveFontSize * 0.5 },
+                      strong: { fontWeight: 'bold' },
+                      b: { fontWeight: 'bold' },
+                      em: { fontStyle: 'italic' },
+                      i: { fontStyle: 'italic' },
+                      u: { textDecorationLine: 'underline' },
+                      h1: { fontSize: effectiveFontSize * 1.5, fontWeight: 'bold', marginBottom: effectiveFontSize },
+                      h2: { fontSize: effectiveFontSize * 1.3, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.8 },
+                      h3: { fontSize: effectiveFontSize * 1.1, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.6 },
+                    }}
+                  />
+                ) : (
+                  <Text 
+                    selectable
+                    onPress={() => {
+                      // When text is tapped, use current word index
+                      setSelectedWordIndex(currentWordIndex);
+                    }}
+                    onLongPress={() => {
+                      // Long press also selects current word position
+                      setSelectedWordIndex(currentWordIndex);
+                    }}
+                    style={[
+                      styles.paragraphText, 
+                      { 
+                        fontSize: effectiveFontSize, 
+                        fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
+                        color: settings.textColor,
+                      }
+                    ]}
+                  >
+                    {paragraphText}
+                  </Text>
+                )}
+              </View>
+            </ScrollView>
             {selectedWordIndex !== null && (
               <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
                 <TouchableOpacity
@@ -495,32 +748,88 @@ export default function RSVPReader({
                 </TouchableOpacity>
               </View>
             )}
-          </ScrollView>
+          </View>
         )}
         
         {viewMode === 'page' && (
-          <ScrollView style={styles.textView} contentContainerStyle={styles.textViewContent}>
-            <View style={styles.centeredTextView}>
-              <Text style={[styles.pageText, { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily }]}>
-                {getPageText().split(' ').map((word, idx) => {
-                  const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-                  const wordIndex = wordsBeforeChapter + idx;
-                  const isSelected = selectedWordIndex === wordIndex;
-                  return (
-                    <Text
-                      key={idx}
-                      onPress={() => handleWordPress(wordIndex)}
-                      style={[
-                        { fontSize: getEffectiveFontSize(), fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily },
-                        isSelected && { backgroundColor: settings.accentColor + '40', color: settings.accentColor }
-                      ]}
-                    >
-                      {word}{idx < getPageText().split(' ').length - 1 ? ' ' : ''}
-                    </Text>
-                  );
-                })}
-              </Text>
-            </View>
+          <View style={styles.textViewContainer}>
+            <ScrollView 
+              style={styles.textView} 
+              contentContainerStyle={styles.textViewContent}
+              scrollEnabled={true}
+              showsVerticalScrollIndicator={true}
+            >
+              <View style={styles.centeredTextView}>
+                {currentChapter?.htmlContent ? (
+                  <RenderHTML
+                    contentWidth={800}
+                    source={{ html: (() => {
+                      // Extract HTML for current 5-6 paragraphs
+                      const paragraphs = currentChapter.htmlContent.split(/<\/p>|<\/div>/).filter(p => p.trim());
+                      // Find paragraph containing current word
+                      const wordsBeforeChapter = wordsBeforeChapterMemo;
+                      const currentWordInChapter = currentWordIndex - wordsBeforeChapter;
+                      let wordCount = 0;
+                      let startIndex = 0;
+                      for (let i = 0; i < paragraphs.length; i++) {
+                        const text = paragraphs[i].replace(/<[^>]*>/g, '');
+                        const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
+                        if (wordCount + paraWordCount > currentWordInChapter) {
+                          startIndex = i;
+                          break;
+                        }
+                        wordCount += paraWordCount;
+                      }
+                      const endIndex = Math.min(paragraphs.length, startIndex + 6);
+                      return paragraphs.slice(startIndex, endIndex).join('</p>') + '</p>';
+                    })() }}
+                    baseStyle={{
+                      color: '#fff',
+                      fontSize: effectiveFontSize,
+                      fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
+                      textAlign: 'left',
+                      lineHeight: effectiveFontSize * 1.5,
+                    }}
+                    tagsStyles={{
+                      p: { marginBottom: effectiveFontSize * 0.8, marginTop: effectiveFontSize * 0.4 },
+                      div: { marginBottom: effectiveFontSize * 0.8 },
+                      br: { height: effectiveFontSize * 0.5 },
+                      strong: { fontWeight: 'bold' },
+                      b: { fontWeight: 'bold' },
+                      em: { fontStyle: 'italic' },
+                      i: { fontStyle: 'italic' },
+                      u: { textDecorationLine: 'underline' },
+                      h1: { fontSize: effectiveFontSize * 1.5, fontWeight: 'bold', marginBottom: effectiveFontSize },
+                      h2: { fontSize: effectiveFontSize * 1.3, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.8 },
+                      h3: { fontSize: effectiveFontSize * 1.1, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.6 },
+                    }}
+                  />
+                ) : (
+                  <Text 
+                    selectable
+                    onPress={() => {
+                      // When text is tapped, use current word index
+                      setSelectedWordIndex(currentWordIndex);
+                    }}
+                    onLongPress={() => {
+                      // Long press selects current word position
+                      setSelectedWordIndex(currentWordIndex);
+                    }}
+                    style={[
+                      styles.pageText, 
+                      { 
+                        fontSize: effectiveFontSize, 
+                        fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
+                        lineHeight: effectiveFontSize * 1.5,
+                        color: settings.textColor,
+                      }
+                    ]}
+                  >
+                    {pageText}
+                  </Text>
+                )}
+              </View>
+            </ScrollView>
             {selectedWordIndex !== null && (
               <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
                 <TouchableOpacity
@@ -531,55 +840,9 @@ export default function RSVPReader({
                 </TouchableOpacity>
               </View>
             )}
-          </ScrollView>
+          </View>
         )}
       </View>
-
-      {/* Speed controls with slider - disabled when not in speed view */}
-      {viewMode === 'speed' && (
-        <View style={styles.speedControls}>
-        <TouchableOpacity 
-          style={styles.speedButton} 
-          onPress={() => handleSpeedChange(-25)}
-          onPressIn={() => setTooltip('Decrease speed')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.speedButtonText}>−</Text>
-        </TouchableOpacity>
-        <View style={styles.sliderContainer}>
-          <Slider
-            style={styles.slider}
-            minimumValue={50}
-            maximumValue={1000}
-            value={wordsPerMinute}
-            onValueChange={handleSpeedSliderChange}
-            minimumTrackTintColor={settings.accentColor}
-            maximumTrackTintColor="#333"
-            thumbTintColor={settings.accentColor}
-            step={1}
-          />
-          <View style={styles.speedInfo}>
-            <Text style={styles.speedText}>{wordsPerMinute} WPM</Text>
-            <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
-          </View>
-        </View>
-        <TouchableOpacity 
-          style={styles.speedButton} 
-          onPress={() => handleSpeedChange(25)}
-          onPressIn={() => setTooltip('Increase speed')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.speedButtonText}>+</Text>
-        </TouchableOpacity>
-      </View>
-      )}
-      
-      {/* Disabled speed controls indicator */}
-      {viewMode !== 'speed' && (
-        <View style={styles.speedControlsDisabled}>
-          <Text style={styles.disabledText}>Speed reading controls available in Speed view</Text>
-        </View>
-      )}
 
       {/* Tooltip */}
       {tooltip && (
@@ -630,10 +893,25 @@ export default function RSVPReader({
         
         <TouchableOpacity 
           style={[styles.button, viewMode !== 'speed' && styles.buttonDisabled]} 
-          onPress={handlePlayPause}
-          disabled={viewMode !== 'speed'}
-          onPressIn={() => viewMode === 'speed' && setTooltip(isPlaying ? 'Pause' : 'Play')}
-          onPressOut={() => setTooltip(null)}
+          onPress={() => {
+            if (viewMode === 'speed') {
+              handlePlayPause();
+            } else {
+              // Show tooltip when play button is clicked in paragraph/page view
+              setTooltip('Speed reading controls available in Speed view');
+              setTimeout(() => setTooltip(null), 2000);
+            }
+          }}
+          onPressIn={() => {
+            if (viewMode === 'speed') {
+              setTooltip(isPlaying ? 'Pause' : 'Play');
+            }
+          }}
+          onPressOut={() => {
+            if (viewMode === 'speed') {
+              setTooltip(null);
+            }
+          }}
         >
           <Text style={[styles.buttonText, viewMode !== 'speed' && styles.buttonTextDisabled]}>{isPlaying ? '⏸' : '▶'}</Text>
         </TouchableOpacity>
@@ -712,26 +990,44 @@ export default function RSVPReader({
         </TouchableOpacity>
       </View>
 
-      {/* Progress bars */}
-      <View style={styles.progressContainer}>
-        <Slider
-          style={styles.progressSlider}
-          minimumValue={0}
-          maximumValue={allWords.length - 1}
-          value={currentWordIndex}
-          onValueChange={(value) => {
-            setCurrentWordIndex(Math.round(value));
-            setIsPlaying(false);
-          }}
-          minimumTrackTintColor={settings.accentColor}
-          maximumTrackTintColor="#333"
-          thumbTintColor={settings.accentColor}
-          step={1}
-        />
-        <Text style={styles.progressText}>
-          {currentWordInChapter} / {totalWordsInChapter} • {bookRemainingPercent}% remaining
-        </Text>
+      {/* Speed controls with slider - disabled when not in speed view */}
+      {viewMode === 'speed' && (
+        <View style={styles.speedControls}>
+        <TouchableOpacity 
+          style={styles.speedButton} 
+          onPress={() => handleSpeedChange(-25)}
+          onPressIn={() => setTooltip('Decrease speed')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={styles.speedButtonText}>−</Text>
+        </TouchableOpacity>
+        <View style={styles.sliderContainer}>
+          <Slider
+            style={styles.slider}
+            minimumValue={50}
+            maximumValue={1000}
+            value={wordsPerMinute}
+            onValueChange={handleSpeedSliderChange}
+            minimumTrackTintColor={settings.accentColor}
+            maximumTrackTintColor="#333"
+            thumbTintColor={settings.accentColor}
+            step={1}
+          />
+          <View style={styles.speedInfo}>
+            <Text style={styles.speedText}>{wordsPerMinute} WPM</Text>
+            <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
+          </View>
+        </View>
+        <TouchableOpacity 
+          style={styles.speedButton} 
+          onPress={() => handleSpeedChange(25)}
+          onPressIn={() => setTooltip('Increase speed')}
+          onPressOut={() => setTooltip(null)}
+        >
+          <Text style={styles.speedButtonText}>+</Text>
+        </TouchableOpacity>
       </View>
+      )}
 
       {/* Word Selection Modal */}
       <Modal
@@ -760,15 +1056,14 @@ export default function RSVPReader({
                 style={styles.wordSelectionButton}
                 onPress={() => {
                   // Find start of current paragraph
-                  const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-                  let paraStart = wordsBeforeChapter;
-                  for (let i = currentWordIndex; i >= wordsBeforeChapter; i--) {
+                  let paraStart = wordsBeforeChapterMemo;
+                  for (let i = currentWordIndex; i >= wordsBeforeChapterMemo; i--) {
                     const word = allWords[i];
                     if (word.match(/[.!?]$/)) {
                       paraStart = i + 1;
                       break;
                     }
-                    if (i === wordsBeforeChapter) paraStart = i;
+                    if (i === wordsBeforeChapterMemo) paraStart = i;
                   }
                   handleWordSelectionConfirm(paraStart);
                 }}
@@ -778,8 +1073,7 @@ export default function RSVPReader({
               <TouchableOpacity
                 style={styles.wordSelectionButton}
                 onPress={() => {
-                  const wordsBeforeChapter = chapters.slice(0, currentChapterIndex).reduce((sum, ch) => sum + ch.words.length, 0);
-                  handleWordSelectionConfirm(wordsBeforeChapter);
+                  handleWordSelectionConfirm(wordsBeforeChapterMemo);
                 }}
               >
                 <Text style={styles.wordSelectionButtonText}>Start from chapter beginning</Text>
@@ -807,11 +1101,33 @@ export default function RSVPReader({
             <Text style={styles.modalTitle}>Settings</Text>
             
             <ScrollView style={styles.scrollView}>
+              {/* Word Color */}
+              <View style={styles.settingSection}>
+                <Text style={styles.settingLabel}>Current Word Color</Text>
+                <View style={styles.colorGrid}>
+                  {TEXT_COLORS.map((color) => (
+                    <TouchableOpacity
+                      key={color.value}
+                      style={[
+                        styles.colorOption,
+                        { backgroundColor: color.value },
+                        settings.wordColor === color.value && styles.colorOptionSelected,
+                      ]}
+                      onPress={() => setSettings({ ...settings, wordColor: color.value })}
+                    >
+                      {settings.wordColor === color.value && (
+                        <Text style={styles.colorCheck}>✓</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
               {/* Accent Color */}
               <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Accent Color</Text>
+                <Text style={styles.settingLabel}>Highlighted Letter Color</Text>
                 <View style={styles.colorGrid}>
-                  {ACCENT_COLORS.map((color) => (
+                  {COMMON_COLORS.map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -819,7 +1135,10 @@ export default function RSVPReader({
                         { backgroundColor: color.value },
                         settings.accentColor === color.value && styles.colorOptionSelected,
                       ]}
-                      onPress={() => setSettings({ ...settings, accentColor: color.value })}
+                      onPress={() => {
+                        setSettings({ ...settings, accentColor: color.value });
+                        setCustomAccentColorInput('');
+                      }}
                     >
                       {settings.accentColor === color.value && (
                         <Text style={styles.colorCheck}>✓</Text>
@@ -827,7 +1146,177 @@ export default function RSVPReader({
                     </TouchableOpacity>
                   ))}
                 </View>
+                <View style={styles.customColorContainer}>
+                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
+                  <TextInput
+                    style={styles.colorInput}
+                    value={customAccentColorInput}
+                    onChangeText={(text) => {
+                      setCustomAccentColorInput(text);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
+                        setSettings({ ...settings, accentColor: text });
+                      }
+                    }}
+                    placeholder="#00ff88"
+                    placeholderTextColor="#666"
+                    maxLength={7}
+                  />
+                </View>
               </View>
+
+              {/* Background Color */}
+              <View style={styles.settingSection}>
+                <Text style={styles.settingLabel}>Background Color</Text>
+                <View style={styles.colorGrid}>
+                  {BACKGROUND_COLORS.map((color) => (
+                    <TouchableOpacity
+                      key={color.value}
+                      style={[
+                        styles.colorOption,
+                        { backgroundColor: color.value },
+                        settings.backgroundColor === color.value && styles.colorOptionSelected,
+                      ]}
+                      onPress={() => {
+                        setSettings({ ...settings, backgroundColor: color.value });
+                        setCustomBackgroundColorInput('');
+                      }}
+                    >
+                      {settings.backgroundColor === color.value && (
+                        <Text style={styles.colorCheck}>✓</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.customColorContainer}>
+                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
+                  <TextInput
+                    style={styles.colorInput}
+                    value={customBackgroundColorInput}
+                    onChangeText={(text) => {
+                      setCustomBackgroundColorInput(text);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
+                        setSettings({ ...settings, backgroundColor: text });
+                      }
+                    }}
+                    placeholder="#000000"
+                    placeholderTextColor="#666"
+                    maxLength={7}
+                  />
+                </View>
+              </View>
+
+              {/* Text Color */}
+              <View style={styles.settingSection}>
+                <Text style={styles.settingLabel}>Text Color (Paragraph/Page View)</Text>
+                <View style={styles.colorGrid}>
+                  {TEXT_COLORS.map((color) => (
+                    <TouchableOpacity
+                      key={color.value}
+                      style={[
+                        styles.colorOption,
+                        { backgroundColor: color.value },
+                        settings.textColor === color.value && styles.colorOptionSelected,
+                      ]}
+                      onPress={() => {
+                        setSettings({ ...settings, textColor: color.value });
+                        setCustomTextColorInput('');
+                      }}
+                    >
+                      {settings.textColor === color.value && (
+                        <Text style={styles.colorCheck}>✓</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.customColorContainer}>
+                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
+                  <TextInput
+                    style={styles.colorInput}
+                    value={customTextColorInput}
+                    onChangeText={(text) => {
+                      setCustomTextColorInput(text);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
+                        setSettings({ ...settings, textColor: text });
+                      }
+                    }}
+                    placeholder="#ffffff"
+                    placeholderTextColor="#666"
+                    maxLength={7}
+                  />
+                </View>
+              </View>
+
+              {/* Context Words Color */}
+              <View style={styles.settingSection}>
+                <Text style={styles.settingLabel}>Previous/Next Words Color</Text>
+                <View style={styles.colorGrid}>
+                  {COMMON_COLORS.map((color) => (
+                    <TouchableOpacity
+                      key={color.value}
+                      style={[
+                        styles.colorOption,
+                        { backgroundColor: color.value },
+                        settings.contextWordsColor === color.value && styles.colorOptionSelected,
+                      ]}
+                      onPress={() => {
+                        setSettings({ ...settings, contextWordsColor: color.value });
+                        setCustomContextWordsColorInput('');
+                      }}
+                    >
+                      {settings.contextWordsColor === color.value && (
+                        <Text style={styles.colorCheck}>✓</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.customColorContainer}>
+                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
+                  <TextInput
+                    style={styles.colorInput}
+                    value={customContextWordsColorInput}
+                    onChangeText={(text) => {
+                      setCustomContextWordsColorInput(text);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
+                        setSettings({ ...settings, contextWordsColor: text });
+                      }
+                    }}
+                    placeholder="#999999"
+                    placeholderTextColor="#666"
+                    maxLength={7}
+                  />
+                </View>
+              </View>
+
+              {/* Show Context Words Toggle */}
+              <View style={styles.settingSection}>
+                <View style={styles.toggleContainer}>
+                  <Text style={styles.settingLabel}>Show Previous/Next Words</Text>
+                  <Switch
+                    value={settings.showContextWords}
+                    onValueChange={(value) => setSettings({ ...settings, showContextWords: value })}
+                    trackColor={{ false: '#333', true: settings.accentColor }}
+                    thumbColor={settings.showContextWords ? '#fff' : '#999'}
+                  />
+                </View>
+              </View>
+
+              {/* Context Words Spacing */}
+              {settings.showContextWords && (
+                <View style={styles.settingSection}>
+                  <Text style={styles.settingLabel}>Spacing: {settings.contextWordsSpacing}px</Text>
+                  <Slider
+                    style={styles.slider}
+                    minimumValue={0}
+                    maximumValue={40}
+                    value={settings.contextWordsSpacing}
+                    onValueChange={(value) => setSettings({ ...settings, contextWordsSpacing: Math.round(value) })}
+                    minimumTrackTintColor={settings.accentColor}
+                    maximumTrackTintColor="#333"
+                    thumbTintColor={settings.accentColor}
+                    step={1}
+                  />
+                </View>
+              )}
 
               {/* Font Family */}
               <View style={styles.settingSection}>
@@ -924,11 +1413,10 @@ export default function RSVPReader({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
-    maxWidth: 800,
+    maxWidth: 900,
     alignSelf: 'center',
     width: '100%',
   },
@@ -946,6 +1434,16 @@ const styles = StyleSheet.create({
     color: '#fff',
     textAlign: 'center',
     fontWeight: '600',
+    marginBottom: 5,
+  },
+  progressContainer: {
+    position: 'absolute',
+    top: 75,
+    left: 0,
+    right: 0,
+    width: '100%',
+    alignItems: 'center',
+    zIndex: 1,
   },
   readerArea: {
     flex: 1,
@@ -953,6 +1451,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '100%',
     maxWidth: 600,
+    alignSelf: 'center',
+    overflow: 'hidden',
+  },
+  readerAreaSpeed: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 1000,
     alignSelf: 'center',
     overflow: 'hidden',
   },
@@ -965,11 +1472,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     overflow: 'hidden',
   },
+  readerContentSpeed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    maxWidth: 1000,
+    paddingHorizontal: 20,
+    overflow: 'hidden',
+  },
   contextWordsLeft: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingRight: 15,
+    paddingRight: 0,
     maxWidth: 200,
     overflow: 'hidden',
   },
@@ -977,7 +1493,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingLeft: 15,
+    paddingLeft: 0,
     maxWidth: 200,
     overflow: 'hidden',
   },
@@ -986,19 +1502,17 @@ const styles = StyleSheet.create({
     flexWrap: 'nowrap',
   },
   contextWord: {
-    color: '#999',
     fontWeight: '300',
   },
   currentWordContainer: {
     flex: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 0,
     minWidth: 200,
   },
   word: {
     fontWeight: 'bold',
-    color: '#fff',
     textAlign: 'center',
   },
   accentLetter: {
@@ -1052,18 +1566,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginVertical: 20,
-    gap: 10,
-    flexWrap: 'wrap',
-    maxWidth: 600,
+    marginVertical: 12,
+    gap: 4,
+    flexWrap: 'nowrap',
+    maxWidth: 900,
     alignSelf: 'center',
+    paddingHorizontal: 5,
   },
   button: {
     backgroundColor: '#333',
-    padding: 15,
+    padding: 10,
     borderRadius: 8,
-    minWidth: 50,
+    minWidth: 40,
     alignItems: 'center',
+    flexShrink: 1,
   },
   buttonText: {
     color: '#fff',
@@ -1081,14 +1597,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
   },
-  progressContainer: {
-    width: '100%',
-    marginTop: 20,
-    maxWidth: 600,
-    alignSelf: 'center',
-  },
   progressSlider: {
     width: '100%',
+    maxWidth: 600,
     height: 40,
     marginBottom: 10,
   },
@@ -1096,6 +1607,10 @@ const styles = StyleSheet.create({
     color: '#fff',
     textAlign: 'center',
     fontSize: 14,
+    marginTop: 5,
+    marginBottom: 10,
+    width: '100%',
+    maxWidth: 600,
   },
   modalOverlay: {
     flex: 1,
@@ -1212,19 +1727,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   viewModeButton: {
-    minWidth: 50,
+    minWidth: 35,
+    maxWidth: 40,
   },
   viewModeButtonActive: {
     backgroundColor: '#555',
-  },
-  speedControlsDisabled: {
-    padding: 15,
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  disabledText: {
-    color: '#666',
-    fontSize: 14,
   },
   buttonDisabled: {
     backgroundColor: '#222',
@@ -1233,13 +1740,19 @@ const styles = StyleSheet.create({
   buttonTextDisabled: {
     color: '#666',
   },
+  textViewContainer: {
+    flex: 1,
+    width: '100%',
+    position: 'relative',
+    marginTop: 120, // Space for chapter name and progress bar
+  },
   textView: {
     flex: 1,
     width: '100%',
   },
   textViewContent: {
     padding: 20,
-    paddingTop: 60, // Space for chapter name
+    paddingTop: 20,
     flexGrow: 1,
     justifyContent: 'center',
   },
@@ -1251,14 +1764,38 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   paragraphText: {
-    color: '#fff',
     lineHeight: 32,
     textAlign: 'left',
   },
   pageText: {
-    color: '#fff',
     lineHeight: 32,
     textAlign: 'left',
+  },
+  customColorContainer: {
+    marginTop: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  settingSubLabel: {
+    fontSize: 14,
+    color: '#ccc',
+    marginRight: 10,
+  },
+  colorInput: {
+    flex: 1,
+    backgroundColor: '#333',
+    color: '#fff',
+    padding: 10,
+    borderRadius: 6,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  toggleContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   wordSelectionContainer: {
     marginVertical: 20,
@@ -1288,15 +1825,21 @@ const styles = StyleSheet.create({
   },
   rsvpPrompt: {
     position: 'absolute',
-    bottom: 80,
+    bottom: 100,
     alignSelf: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    padding: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    padding: 10,
     borderRadius: 8,
     borderWidth: 2,
     alignItems: 'center',
     zIndex: 1000,
     minWidth: 140,
+    maxWidth: 200,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 5,
   },
   rsvpPromptButton: {
     padding: 8,

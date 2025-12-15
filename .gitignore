@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Ebook files - ignore all contents of books directory but keep the directory
+assets/books/*
+!assets/books/.gitkeep
