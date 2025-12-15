@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal, FlatList, ScrollView, TextInput, Switch, Platform } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import Slider from '@react-native-community/slider';
 import RenderHTML from 'react-native-render-html';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -23,22 +22,19 @@ interface Settings {
   showContextWords: boolean;
   contextWordsSpacing: number;
   wordColor: string;
+  wordsPerMinute: number;
 }
 
-const COMMON_COLORS = [
+// Default color palettes (first 5 of each)
+const DEFAULT_COMMON_COLORS = [
   { name: 'Green', value: '#00ff88' },
   { name: 'Yellow', value: '#ffeb3b' },
   { name: 'Cyan', value: '#00bcd4' },
   { name: 'Orange', value: '#ff9800' },
   { name: 'Pink', value: '#e91e63' },
-  { name: 'Blue', value: '#2196f3' },
-  { name: 'Red', value: '#f44336' },
-  { name: 'Purple', value: '#9c27b0' },
-  { name: 'White', value: '#ffffff' },
-  { name: 'Black', value: '#000000' },
 ];
 
-const BACKGROUND_COLORS = [
+const DEFAULT_BACKGROUND_COLORS = [
   { name: 'Black', value: '#000000' },
   { name: 'Dark Gray', value: '#1a1a1a' },
   { name: 'Gray', value: '#2a2a2a' },
@@ -46,7 +42,7 @@ const BACKGROUND_COLORS = [
   { name: 'Dark Blue', value: '#0a1a2a' },
 ];
 
-const TEXT_COLORS = [
+const DEFAULT_TEXT_COLORS = [
   { name: 'White', value: '#ffffff' },
   { name: 'Light Gray', value: '#e0e0e0' },
   { name: 'Beige', value: '#f5f5dc' },
@@ -100,11 +96,34 @@ export default function RSVPReader({
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [isLoadingProgress, setIsLoadingProgress] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [wordsPerMinute, setWordsPerMinute] = useState(Math.round(initialWordsPerMinute));
   const [showSettings, setShowSettings] = useState(false);
   const [showChapterMenu, setShowChapterMenu] = useState(false);
   const [showWordSelection, setShowWordSelection] = useState(false);
+  const [showFontPicker, setShowFontPicker] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [colorPickerType, setColorPickerType] = useState<'accent' | 'word' | 'background' | 'text' | 'contextWords' | null>(null);
+  const [colorPickerCurrentColor, setColorPickerCurrentColor] = useState('#000000');
+  const [colorPickerRgb, setColorPickerRgb] = useState({ r: 0, g: 0, b: 0 });
   const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(null);
+
+  // Convert hex to RGB
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : { r: 0, g: 0, b: 0 };
+  };
+
+  // Convert RGB to hex
+  const rgbToHex = (r: number, g: number, b: number) => {
+    return `#${[r, g, b].map(x => {
+      const hex = Math.round(x).toString(16);
+      return hex.length === 1 ? '0' + hex : hex;
+    }).join('')}`.toUpperCase();
+  };
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
   const [settings, setSettings] = useState<Settings>({
     accentColor: '#00ff88',
     fontFamily: 'System',
@@ -115,6 +134,7 @@ export default function RSVPReader({
     showContextWords: true,
     contextWordsSpacing: 10,
     wordColor: '#ffffff',
+    wordsPerMinute: Math.round(initialWordsPerMinute),
   });
   const [customAccentColorInput, setCustomAccentColorInput] = useState('');
   const [customWordColorInput, setCustomWordColorInput] = useState('');
@@ -122,12 +142,140 @@ export default function RSVPReader({
   const [customTextColorInput, setCustomTextColorInput] = useState('');
   const [customContextWordsColorInput, setCustomContextWordsColorInput] = useState('');
   const [tooltip, setTooltip] = useState<string | null>(null);
+  const [recentColors, setRecentColors] = useState<{
+    accent: string[];
+    word: string[];
+    background: string[];
+    text: string[];
+    contextWords: string[];
+  }>({
+    accent: [],
+    word: [],
+    background: [],
+    text: [],
+    contextWords: [],
+  });
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Helper function to get display colors (recent + defaults, max 5)
+  const getDisplayColors = (type: 'accent' | 'word' | 'background' | 'text' | 'contextWords'): Array<{ name: string; value: string }> => {
+    const defaults: Array<{ name: string; value: string }> = 
+      type === 'accent' ? DEFAULT_COMMON_COLORS :
+      type === 'word' ? DEFAULT_TEXT_COLORS :
+      type === 'background' ? DEFAULT_BACKGROUND_COLORS :
+      type === 'text' ? DEFAULT_TEXT_COLORS :
+      DEFAULT_COMMON_COLORS;
+    
+    const recent = recentColors[type].map((color: string) => ({ name: '', value: color }));
+    const combined = [...recent, ...defaults];
+    
+    // Remove duplicates and limit to 5
+    const unique = combined.filter((color, index, self) => 
+      index === self.findIndex(c => c.value === color.value)
+    ).slice(0, 5);
+    
+    return unique;
+  };
+
+  // Helper function to add color to recent colors (only if it's a new color)
+  const addToRecentColors = (type: 'accent' | 'word' | 'background' | 'text' | 'contextWords', color: string) => {
+    setRecentColors(prev => {
+      const current = prev[type];
+      // If color already exists, don't reorder - just return current state
+      if (current.includes(color)) {
+        return prev;
+      }
+      // Add new color to front and drop oldest if over limit
+      const updated = [color, ...current].slice(0, 5); // Keep max 5
+      return { ...prev, [type]: updated };
+    });
+  };
+
+  // Handler to open color picker
+  const handleOpenColorPicker = (type: 'accent' | 'word' | 'background' | 'text' | 'contextWords') => {
+    const currentColor = 
+      type === 'accent' ? settings.accentColor :
+      type === 'word' ? settings.wordColor :
+      type === 'background' ? settings.backgroundColor :
+      type === 'text' ? settings.textColor :
+      settings.contextWordsColor;
+    
+    setColorPickerCurrentColor(currentColor);
+    setColorPickerRgb(hexToRgb(currentColor));
+    setColorPickerType(type);
+    setShowColorPicker(true);
+  };
+
+  // Handler for color picker selection
+  const handleColorPickerSelect = () => {
+    if (!colorPickerType) return;
+    
+    const hexColor = rgbToHex(colorPickerRgb.r, colorPickerRgb.g, colorPickerRgb.b);
+    
+    // Update settings based on type
+    if (colorPickerType === 'accent') {
+      setSettings({ ...settings, accentColor: hexColor });
+      setCustomAccentColorInput(hexColor);
+    } else if (colorPickerType === 'word') {
+      setSettings({ ...settings, wordColor: hexColor });
+      setCustomWordColorInput(hexColor);
+    } else if (colorPickerType === 'background') {
+      setSettings({ ...settings, backgroundColor: hexColor });
+      setCustomBackgroundColorInput(hexColor);
+    } else if (colorPickerType === 'text') {
+      setSettings({ ...settings, textColor: hexColor });
+      setCustomTextColorInput(hexColor);
+    } else if (colorPickerType === 'contextWords') {
+      setSettings({ ...settings, contextWordsColor: hexColor });
+      setCustomContextWordsColorInput(hexColor);
+    }
+    
+    addToRecentColors(colorPickerType, hexColor);
+    setShowColorPicker(false);
+  };
+
+  // Update hex color when RGB changes
+  useEffect(() => {
+    if (showColorPicker) {
+      const hex = rgbToHex(colorPickerRgb.r, colorPickerRgb.g, colorPickerRgb.b);
+      setColorPickerCurrentColor(hex);
+    }
+  }, [colorPickerRgb, showColorPicker]);
 
   // Flatten all words from all chapters for continuous reading
   const allWords = chapters.flatMap(ch => ch.words);
   const currentChapter = chapters[currentChapterIndex];
   const currentWord = allWords[currentWordIndex] || '';
+
+  // Load saved settings and recent colors on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const savedSettings = await AsyncStorage.getItem('rsvp_reader_settings');
+        if (savedSettings) {
+          const parsedSettings = JSON.parse(savedSettings);
+          setSettings((prevSettings) => ({
+            ...prevSettings,
+            ...parsedSettings,
+            // Ensure wordsPerMinute is set, defaulting to initialWordsPerMinute if not in saved settings
+            wordsPerMinute: parsedSettings.wordsPerMinute ?? prevSettings.wordsPerMinute,
+          }));
+        }
+        
+        const savedRecentColors = await AsyncStorage.getItem('rsvp_recent_colors');
+        if (savedRecentColors) {
+          const parsedColors = JSON.parse(savedRecentColors);
+          setRecentColors(parsedColors);
+        }
+      } catch (error) {
+        console.error('Error loading settings:', error);
+      } finally {
+        setIsLoadingSettings(false);
+      }
+    };
+    
+    loadSettings();
+  }, []);
 
   // Load saved progress on mount
   useEffect(() => {
@@ -156,6 +304,36 @@ export default function RSVPReader({
     loadProgress();
   }, [bookUri, chapters.length]);
 
+  // Save settings whenever they change (but not during initial load)
+  useEffect(() => {
+    if (isLoadingSettings) return;
+    
+    const saveSettings = async () => {
+      try {
+        await AsyncStorage.setItem('rsvp_reader_settings', JSON.stringify(settings));
+      } catch (error) {
+        console.error('Error saving settings:', error);
+      }
+    };
+    
+    saveSettings();
+  }, [settings, isLoadingSettings]);
+
+  // Save recent colors whenever they change
+  useEffect(() => {
+    if (isLoadingSettings) return;
+    
+    const saveRecentColors = async () => {
+      try {
+        await AsyncStorage.setItem('rsvp_recent_colors', JSON.stringify(recentColors));
+      } catch (error) {
+        console.error('Error saving recent colors:', error);
+      }
+    };
+    
+    saveRecentColors();
+  }, [recentColors, isLoadingSettings]);
+
   // Save progress whenever it changes
   useEffect(() => {
     if (!bookUri || isLoadingProgress || chapters.length === 0) return;
@@ -175,11 +353,73 @@ export default function RSVPReader({
   }, [bookUri, currentChapterIndex, currentWordIndex, isLoadingProgress, chapters.length]);
 
   // Calculate delay in milliseconds based on words per minute
-  const delayMs = (60 / wordsPerMinute) * 1000;
+  const delayMs = (60 / settings.wordsPerMinute) * 1000;
+
+  // Calculate delay for current word based on punctuation
+  // Punctuation pauses are ADDITIONAL to the base word delay
+  const getWordDelay = (word: string, wordIndex: number): number => {
+    if (!word || word.length === 0) return delayMs;
+    
+    let totalDelay = delayMs; // Start with base word delay
+    
+    // Check for opening quotation marks at the start of the word
+    const startsWithQuote = /^["'«‹]/.test(word);
+    
+    // Check if this is the end of a paragraph
+    // A paragraph ends if we're at the end of a chapter
+    let isEndOfParagraph = false;
+    if (wordIndex >= 0) {
+      let wordCount = 0;
+      for (let i = 0; i < chapters.length; i++) {
+        const chapterEnd = wordCount + chapters[i].words.length;
+        if (wordIndex < chapterEnd) {
+          // Check if this is the last word in this chapter
+          isEndOfParagraph = (wordIndex === chapterEnd - 1);
+          break;
+        }
+        wordCount = chapterEnd;
+      }
+    }
+    
+    // Check for comma
+    if (/,$/.test(word)) {
+      // Comma pause: additional pause equal to 75% of word pause (delayMs * 0.75)
+      totalDelay += delayMs * 0.75;
+    }
+    // Check for opening quotation marks
+    else if (startsWithQuote) {
+      // Opening quote pause: additional pause equal to 75% of word pause (delayMs * 0.75)
+      totalDelay += delayMs * 0.75;
+    }
+    // Check for end-of-sentence punctuation: . ! ? ; : — –
+    else if (/[.!?;:]$/.test(word) || word.endsWith('—') || word.endsWith('–')) {
+      // End of sentence pause: additional pause equal to 75% of word pause (delayMs * 0.75) - same as comma
+      totalDelay += delayMs * 0.75;
+      
+      // If this is also the end of a paragraph, add paragraph pause
+      if (isEndOfParagraph) {
+        // End of paragraph: additional pause equal to 150% of word pause (delayMs * 1.5)
+        totalDelay += delayMs * 1.5;
+      }
+    }
+    // Check for other grammatical markings: closing quotes, parentheses, brackets, etc.
+    else if (/[)\]}"'»›]$/.test(word)) {
+      // Other grammatical markings: additional pause equal to 37.5% of word pause (delayMs * 0.375)
+      totalDelay += delayMs * 0.375;
+    }
+    
+    // Also check if this word is at the end of a paragraph (even without sentence-ending punctuation)
+    if (isEndOfParagraph && !/[.!?;:]$/.test(word) && !word.endsWith('—') && !word.endsWith('–')) {
+      // End of paragraph: additional pause equal to 150% of word pause (delayMs * 1.5)
+      totalDelay += delayMs * 1.5;
+    }
+    
+    return totalDelay;
+  };
 
   // Calculate estimated time to completion
   const remainingWords = allWords.length - currentWordIndex - 1;
-  const estimatedMinutes = remainingWords > 0 ? remainingWords / wordsPerMinute : 0;
+  const estimatedMinutes = remainingWords > 0 ? remainingWords / settings.wordsPerMinute : 0;
   const estimatedTime = estimatedMinutes < 1 
     ? `${Math.round(estimatedMinutes * 60)}s`
     : estimatedMinutes < 60
@@ -204,30 +444,41 @@ export default function RSVPReader({
   }, [currentWordIndex, chapters, currentChapterIndex, isLoadingProgress]);
 
   useEffect(() => {
-    if (isPlaying && currentWordIndex < allWords.length) {
-      intervalRef.current = setInterval(() => {
-        setCurrentWordIndex((prev) => {
-          if (prev >= allWords.length - 1) {
-            setIsPlaying(false);
-            onComplete?.();
-            return prev;
-          }
-          return prev + 1;
-        });
-      }, delayMs);
-    } else {
+    if (!isPlaying || currentWordIndex >= allWords.length) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      return;
     }
 
+    // Use setTimeout with dynamic delays based on punctuation
+    const currentWord = allWords[currentWordIndex] || '';
+    const wordDelay = getWordDelay(currentWord, currentWordIndex);
+    
+    const timeoutId = setTimeout(() => {
+      setCurrentWordIndex((prev) => {
+        if (prev >= allWords.length - 1) {
+          setIsPlaying(false);
+          onComplete?.();
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, wordDelay);
+    
+    intervalRef.current = timeoutId as any; // Store timeout ID for cleanup
+
     return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+        clearTimeout(intervalRef.current as any);
+        intervalRef.current = null;
       }
     };
-  }, [isPlaying, currentWordIndex, allWords.length, delayMs, onComplete]);
+  }, [isPlaying, currentWordIndex, allWords.length, delayMs, onComplete, settings.wordsPerMinute]);
 
   const handlePlayPause = () => {
     setIsPlaying(!isPlaying);
@@ -247,32 +498,52 @@ export default function RSVPReader({
   };
 
   const handleSpeedChange = (delta: number) => {
-    setWordsPerMinute((prev) => Math.max(50, Math.min(1000, Math.round(prev + delta))));
+    setSettings((prev) => ({
+      ...prev,
+      wordsPerMinute: Math.max(50, Math.min(1000, Math.round(prev.wordsPerMinute + delta)))
+    }));
   };
 
   const handleSpeedSliderChange = (value: number) => {
-    setWordsPerMinute(Math.round(value));
+    setSettings((prev) => ({
+      ...prev,
+      wordsPerMinute: Math.round(value)
+    }));
   };
 
   const handlePreviousChapter = () => {
     if (currentChapterIndex > 0) {
+      // Stop playback first
+      setIsPlaying(false);
+      // Clear any pending timeouts
+      if (intervalRef.current) {
+        clearTimeout(intervalRef.current as any);
+        intervalRef.current = null;
+      }
+      // Calculate word index for start of previous chapter
       let wordCount = 0;
-      for (let i = 0; i < currentChapterIndex; i++) {
+      for (let i = 0; i < currentChapterIndex - 1; i++) {
         wordCount += chapters[i].words.length;
       }
       setCurrentWordIndex(wordCount);
-      setIsPlaying(false);
     }
   };
 
   const handleNextChapter = () => {
     if (currentChapterIndex < chapters.length - 1) {
+      // Stop playback first
+      setIsPlaying(false);
+      // Clear any pending timeouts
+      if (intervalRef.current) {
+        clearTimeout(intervalRef.current as any);
+        intervalRef.current = null;
+      }
+      // Calculate word index for start of next chapter
       let wordCount = 0;
       for (let i = 0; i <= currentChapterIndex; i++) {
         wordCount += chapters[i].words.length;
       }
       setCurrentWordIndex(wordCount);
-      setIsPlaying(false);
     }
   };
 
@@ -1006,7 +1277,7 @@ export default function RSVPReader({
             style={styles.slider}
             minimumValue={50}
             maximumValue={1000}
-            value={wordsPerMinute}
+            value={settings.wordsPerMinute}
             onValueChange={handleSpeedSliderChange}
             minimumTrackTintColor={settings.accentColor}
             maximumTrackTintColor="#333"
@@ -1014,7 +1285,7 @@ export default function RSVPReader({
             step={1}
           />
           <View style={styles.speedInfo}>
-            <Text style={styles.speedText}>{wordsPerMinute} WPM</Text>
+            <Text style={styles.speedText}>{settings.wordsPerMinute} WPM</Text>
             <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
           </View>
         </View>
@@ -1105,7 +1376,7 @@ export default function RSVPReader({
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Current Word Color</Text>
                 <View style={styles.colorGrid}>
-                  {TEXT_COLORS.map((color) => (
+                  {getDisplayColors('word').map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -1113,7 +1384,11 @@ export default function RSVPReader({
                         { backgroundColor: color.value },
                         settings.wordColor === color.value && styles.colorOptionSelected,
                       ]}
-                      onPress={() => setSettings({ ...settings, wordColor: color.value })}
+                      onPress={() => {
+                        setSettings({ ...settings, wordColor: color.value });
+                        setCustomWordColorInput('');
+                        addToRecentColors('word', color.value);
+                      }}
                     >
                       {settings.wordColor === color.value && (
                         <Text style={styles.colorCheck}>✓</Text>
@@ -1121,13 +1396,36 @@ export default function RSVPReader({
                     </TouchableOpacity>
                   ))}
                 </View>
+                <View style={styles.customColorContainer}>
+                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
+                  <TextInput
+                    style={styles.colorInput}
+                    value={customWordColorInput}
+                    onChangeText={(text) => {
+                      setCustomWordColorInput(text);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
+                        setSettings({ ...settings, wordColor: text });
+                        addToRecentColors('word', text);
+                      }
+                    }}
+                    placeholder="#ffffff"
+                    placeholderTextColor="#666"
+                    maxLength={7}
+                  />
+                  <TouchableOpacity
+                    style={styles.colorPickerButton}
+                    onPress={() => handleOpenColorPicker('word')}
+                  >
+                    <Text style={styles.colorPickerButtonText}>🎨</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {/* Accent Color */}
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Highlighted Letter Color</Text>
                 <View style={styles.colorGrid}>
-                  {COMMON_COLORS.map((color) => (
+                  {getDisplayColors('accent').map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -1138,6 +1436,7 @@ export default function RSVPReader({
                       onPress={() => {
                         setSettings({ ...settings, accentColor: color.value });
                         setCustomAccentColorInput('');
+                        addToRecentColors('accent', color.value);
                       }}
                     >
                       {settings.accentColor === color.value && (
@@ -1155,12 +1454,19 @@ export default function RSVPReader({
                       setCustomAccentColorInput(text);
                       if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
                         setSettings({ ...settings, accentColor: text });
+                        addToRecentColors('accent', text);
                       }
                     }}
                     placeholder="#00ff88"
                     placeholderTextColor="#666"
                     maxLength={7}
                   />
+                  <TouchableOpacity
+                    style={styles.colorPickerButton}
+                    onPress={() => handleOpenColorPicker('accent')}
+                  >
+                    <Text style={styles.colorPickerButtonText}>🎨</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1168,7 +1474,7 @@ export default function RSVPReader({
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Background Color</Text>
                 <View style={styles.colorGrid}>
-                  {BACKGROUND_COLORS.map((color) => (
+                  {getDisplayColors('background').map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -1179,6 +1485,7 @@ export default function RSVPReader({
                       onPress={() => {
                         setSettings({ ...settings, backgroundColor: color.value });
                         setCustomBackgroundColorInput('');
+                        addToRecentColors('background', color.value);
                       }}
                     >
                       {settings.backgroundColor === color.value && (
@@ -1196,12 +1503,19 @@ export default function RSVPReader({
                       setCustomBackgroundColorInput(text);
                       if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
                         setSettings({ ...settings, backgroundColor: text });
+                        addToRecentColors('background', text);
                       }
                     }}
                     placeholder="#000000"
                     placeholderTextColor="#666"
                     maxLength={7}
                   />
+                  <TouchableOpacity
+                    style={styles.colorPickerButton}
+                    onPress={() => handleOpenColorPicker('background')}
+                  >
+                    <Text style={styles.colorPickerButtonText}>🎨</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1209,7 +1523,7 @@ export default function RSVPReader({
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Text Color (Paragraph/Page View)</Text>
                 <View style={styles.colorGrid}>
-                  {TEXT_COLORS.map((color) => (
+                  {getDisplayColors('text').map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -1220,6 +1534,7 @@ export default function RSVPReader({
                       onPress={() => {
                         setSettings({ ...settings, textColor: color.value });
                         setCustomTextColorInput('');
+                        addToRecentColors('text', color.value);
                       }}
                     >
                       {settings.textColor === color.value && (
@@ -1237,12 +1552,19 @@ export default function RSVPReader({
                       setCustomTextColorInput(text);
                       if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
                         setSettings({ ...settings, textColor: text });
+                        addToRecentColors('text', text);
                       }
                     }}
                     placeholder="#ffffff"
                     placeholderTextColor="#666"
                     maxLength={7}
                   />
+                  <TouchableOpacity
+                    style={styles.colorPickerButton}
+                    onPress={() => handleOpenColorPicker('text')}
+                  >
+                    <Text style={styles.colorPickerButtonText}>🎨</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1250,7 +1572,7 @@ export default function RSVPReader({
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Previous/Next Words Color</Text>
                 <View style={styles.colorGrid}>
-                  {COMMON_COLORS.map((color) => (
+                  {getDisplayColors('contextWords').map((color) => (
                     <TouchableOpacity
                       key={color.value}
                       style={[
@@ -1261,6 +1583,7 @@ export default function RSVPReader({
                       onPress={() => {
                         setSettings({ ...settings, contextWordsColor: color.value });
                         setCustomContextWordsColorInput('');
+                        addToRecentColors('contextWords', color.value);
                       }}
                     >
                       {settings.contextWordsColor === color.value && (
@@ -1278,12 +1601,19 @@ export default function RSVPReader({
                       setCustomContextWordsColorInput(text);
                       if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
                         setSettings({ ...settings, contextWordsColor: text });
+                        addToRecentColors('contextWords', text);
                       }
                     }}
                     placeholder="#999999"
                     placeholderTextColor="#666"
                     maxLength={7}
                   />
+                  <TouchableOpacity
+                    style={styles.colorPickerButton}
+                    onPress={() => handleOpenColorPicker('contextWords')}
+                  >
+                    <Text style={styles.colorPickerButtonText}>🎨</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1318,26 +1648,6 @@ export default function RSVPReader({
                 </View>
               )}
 
-              {/* Font Family */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Font Family</Text>
-                {FONT_FAMILIES.map((font) => (
-                  <TouchableOpacity
-                    key={font}
-                    style={[
-                      styles.fontOption,
-                      settings.fontFamily === font && styles.fontOptionSelected,
-                    ]}
-                    onPress={() => setSettings({ ...settings, fontFamily: font })}
-                  >
-                    <Text style={styles.fontOptionText}>{font}</Text>
-                    {settings.fontFamily === font && (
-                      <Text style={styles.fontCheck}>✓</Text>
-                    )}
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               {/* Font Size */}
               <View style={styles.settingSection}>
                 <Text style={styles.settingLabel}>Font Size: {Math.round(settings.fontSize)}pt</Text>
@@ -1353,11 +1663,171 @@ export default function RSVPReader({
                   step={1}
                 />
               </View>
+
+              {/* Font Family */}
+              <View style={styles.settingSection}>
+                <Text style={styles.settingLabel}>Font Family</Text>
+                <TouchableOpacity
+                  style={styles.fontPickerButton}
+                  onPress={() => setShowFontPicker(true)}
+                >
+                  <Text style={styles.fontPickerButtonText}>{settings.fontFamily}</Text>
+                  <Text style={styles.fontPickerButtonArrow}>▼</Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
 
             <TouchableOpacity
               style={[styles.modalButton, { backgroundColor: '#333' }]}
               onPress={() => setShowSettings(false)}
+            >
+              <Text style={styles.modalButtonTextWhite}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Color Picker Modal */}
+      <Modal
+        visible={showColorPicker}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowColorPicker(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowColorPicker(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+            style={styles.colorPickerModalContent}
+          >
+            <Text style={styles.modalTitle}>Select Color</Text>
+            
+            {/* Color Preview */}
+            <View style={[styles.colorPreview, { backgroundColor: colorPickerCurrentColor }]}>
+              <Text style={styles.colorPreviewText}>{colorPickerCurrentColor}</Text>
+            </View>
+            
+            {/* RGB Sliders */}
+            <View style={styles.colorPickerSliders}>
+              <View style={styles.colorSliderRow}>
+                <Text style={styles.colorSliderLabel}>R: {Math.round(colorPickerRgb.r)}</Text>
+                <Slider
+                  style={styles.colorSlider}
+                  minimumValue={0}
+                  maximumValue={255}
+                  value={colorPickerRgb.r}
+                  onValueChange={(value) => setColorPickerRgb({ ...colorPickerRgb, r: value })}
+                  minimumTrackTintColor="#f44336"
+                  maximumTrackTintColor="#333"
+                  thumbTintColor="#f44336"
+                  step={1}
+                />
+              </View>
+              <View style={styles.colorSliderRow}>
+                <Text style={styles.colorSliderLabel}>G: {Math.round(colorPickerRgb.g)}</Text>
+                <Slider
+                  style={styles.colorSlider}
+                  minimumValue={0}
+                  maximumValue={255}
+                  value={colorPickerRgb.g}
+                  onValueChange={(value) => setColorPickerRgb({ ...colorPickerRgb, g: value })}
+                  minimumTrackTintColor="#4caf50"
+                  maximumTrackTintColor="#333"
+                  thumbTintColor="#4caf50"
+                  step={1}
+                />
+              </View>
+              <View style={styles.colorSliderRow}>
+                <Text style={styles.colorSliderLabel}>B: {Math.round(colorPickerRgb.b)}</Text>
+                <Slider
+                  style={styles.colorSlider}
+                  minimumValue={0}
+                  maximumValue={255}
+                  value={colorPickerRgb.b}
+                  onValueChange={(value) => setColorPickerRgb({ ...colorPickerRgb, b: value })}
+                  minimumTrackTintColor="#2196f3"
+                  maximumTrackTintColor="#333"
+                  thumbTintColor="#2196f3"
+                  step={1}
+                />
+              </View>
+            </View>
+            
+            {/* Quick Color Presets */}
+            <View style={styles.quickColorsContainer}>
+              <Text style={styles.quickColorsLabel}>Quick Colors:</Text>
+              <View style={styles.quickColorsGrid}>
+                {['#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080', '#FFC0CB', '#A52A2A'].map((color) => (
+                  <TouchableOpacity
+                    key={color}
+                    style={[styles.quickColorOption, { backgroundColor: color }]}
+                    onPress={() => {
+                      setColorPickerRgb(hexToRgb(color));
+                    }}
+                  />
+                ))}
+              </View>
+            </View>
+            
+            {/* Action Buttons */}
+            <View style={styles.colorPickerActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: '#333', flex: 1, marginRight: 10 }]}
+                onPress={() => setShowColorPicker(false)}
+              >
+                <Text style={styles.modalButtonTextWhite}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: '#00ff88', flex: 1 }]}
+                onPress={handleColorPickerSelect}
+              >
+                <Text style={styles.modalButtonText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Font Picker Modal */}
+      <Modal
+        visible={showFontPicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowFontPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Font Family</Text>
+            <FlatList
+              data={FONT_FAMILIES}
+              keyExtractor={(item) => item}
+              style={styles.fontList}
+              contentContainerStyle={styles.fontListContent}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.fontMenuItem,
+                    settings.fontFamily === item && styles.fontMenuItemSelected,
+                  ]}
+                  onPress={() => {
+                    setSettings({ ...settings, fontFamily: item });
+                    setShowFontPicker(false);
+                  }}
+                >
+                  <Text style={styles.fontMenuItemText}>{item}</Text>
+                  {settings.fontFamily === item && (
+                    <Text style={styles.fontMenuCheck}>✓</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            />
+            <TouchableOpacity
+              style={[styles.modalButton, { backgroundColor: '#333' }]}
+              onPress={() => setShowFontPicker(false)}
             >
               <Text style={styles.modalButtonTextWhite}>Close</Text>
             </TouchableOpacity>
@@ -1608,7 +2078,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 14,
     marginTop: 5,
-    marginBottom: 10,
+    marginBottom: 25,
     width: '100%',
     maxWidth: 600,
   },
@@ -1650,9 +2120,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   colorOption: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 33,
+    height: 33,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
@@ -1663,7 +2133,7 @@ const styles = StyleSheet.create({
   },
   colorCheck: {
     color: '#000',
-    fontSize: 24,
+    fontSize: 16,
     fontWeight: 'bold',
   },
   fontOption: {
@@ -1744,7 +2214,8 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     position: 'relative',
-    marginTop: 120, // Space for chapter name and progress bar
+    marginTop: 165, // Space for chapter name (40) + progress bar (~100) + 25px margin
+    paddingBottom: 20, // Extra padding at bottom for scrolling
   },
   textView: {
     flex: 1,
@@ -1776,6 +2247,87 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  colorPickerButton: {
+    backgroundColor: '#444',
+    padding: 10,
+    borderRadius: 8,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colorPickerButtonText: {
+    fontSize: 20,
+  },
+  colorPickerModalContent: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  colorPreview: {
+    width: '100%',
+    height: 80,
+    borderRadius: 8,
+    marginBottom: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#555',
+  },
+  colorPreviewText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textShadowColor: '#000',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 2,
+  },
+  colorPickerSliders: {
+    width: '100%',
+    marginBottom: 20,
+  },
+  colorSliderRow: {
+    marginBottom: 15,
+  },
+  colorSliderLabel: {
+    color: '#fff',
+    fontSize: 14,
+    marginBottom: 5,
+    fontWeight: '600',
+  },
+  colorSlider: {
+    width: '100%',
+    height: 40,
+  },
+  quickColorsContainer: {
+    width: '100%',
+    marginBottom: 20,
+  },
+  quickColorsLabel: {
+    color: '#fff',
+    fontSize: 14,
+    marginBottom: 10,
+    fontWeight: '600',
+  },
+  quickColorsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  quickColorOption: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#555',
+  },
+  colorPickerActions: {
+    flexDirection: 'row',
+    width: '100%',
+    marginTop: 10,
   },
   settingSubLabel: {
     fontSize: 14,
@@ -1855,6 +2407,54 @@ const styles = StyleSheet.create({
   modalButtonTextWhite: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: 'bold',
+  },
+  fontPickerButton: {
+    backgroundColor: '#333',
+    borderRadius: 8,
+    padding: 15,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  fontPickerButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    flex: 1,
+  },
+  fontPickerButtonArrow: {
+    color: '#999',
+    fontSize: 12,
+    marginLeft: 10,
+  },
+  fontList: {
+    maxHeight: 400,
+  },
+  fontListContent: {
+    paddingBottom: 10,
+  },
+  fontMenuItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  fontMenuItemSelected: {
+    backgroundColor: '#444',
+  },
+  fontMenuItemText: {
+    color: '#fff',
+    fontSize: 16,
+    flex: 1,
+  },
+  fontMenuCheck: {
+    color: '#00ff88',
+    fontSize: 20,
     fontWeight: 'bold',
   },
 });
