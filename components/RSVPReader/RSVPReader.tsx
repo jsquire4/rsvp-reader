@@ -1,19 +1,23 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { View, Text, TouchableOpacity, Modal, FlatList, ScrollView, TextInput, Switch } from 'react-native';
-import RenderHTML from 'react-native-render-html';
+import { View, Text, TouchableOpacity, ScrollView } from 'react-native';
 import { Chapter } from '../../utils/epubParser';
-import { RSVPReaderProps, ViewMode, Settings } from './types';
+import { RSVPReaderProps, ViewMode, ColorType } from './types';
 import { useSettings } from './hooks/useSettings';
 import { useProgress } from './hooks/useProgress';
 import { useColorPicker } from './hooks/useColorPicker';
-import Slider from '@react-native-community/slider';
 import { useWordProcessing } from './hooks/useWordProcessing';
 import { formatChapterTitle } from './utils/wordUtils';
-import { hexToRgb, rgbToHex } from './utils/colorUtils';
+import { rgbToHex } from './utils/colorUtils';
 import { SpeedView } from './components/SpeedView';
 import { ProgressBar } from './components/ProgressBar';
 import { SpeedControls } from './components/SpeedControls';
-import { FONT_FAMILIES } from './constants';
+import { SettingsModal } from './components/SettingsModal';
+import { ColorPickerModal } from './components/ColorPickerModal';
+import { FontPickerModal } from './components/FontPickerModal';
+import { ChapterMenuModal } from './components/ChapterMenuModal';
+import { WordSelectionModal } from './components/WordSelectionModal';
+import { RSVPPrompt } from './components/RSVPPrompt';
+import { RenderHTMLConfig } from './components/RenderHTMLConfig';
 import { styles } from './styles';
 
 export default function RSVPReader({ 
@@ -532,6 +536,14 @@ export default function RSVPReader({
     colorPicker.setShowColorPicker(false);
   };
 
+  const handleCustomColorInputChange = (type: ColorType, value: string) => {
+    if (type === 'accent') setCustomAccentColorInput(value);
+    else if (type === 'word') setCustomWordColorInput(value);
+    else if (type === 'background') setCustomBackgroundColorInput(value);
+    else if (type === 'text') setCustomTextColorInput(value);
+    else if (type === 'contextWords') setCustomContextWordsColorInput(value);
+  };
+
   // Calculate current word index within chapter
   const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo + 1;
   const totalWordsInChapter = currentChapter?.words.length || 0;
@@ -582,29 +594,10 @@ export default function RSVPReader({
             >
               <View style={styles.centeredTextView}>
                 {paragraphHTML ? (
-                  <RenderHTML
-                    contentWidth={800}
-                    source={{ html: paragraphHTML }}
-                    baseStyle={{
-                      color: settings.textColor,
-                      fontSize: effectiveFontSize,
-                      fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
-                      textAlign: 'left',
-                      lineHeight: effectiveFontSize * 1.5,
-                    }}
-                    tagsStyles={{
-                      p: { marginBottom: effectiveFontSize * 0.8, marginTop: effectiveFontSize * 0.4 },
-                      div: { marginBottom: effectiveFontSize * 0.8 },
-                      br: { height: effectiveFontSize * 0.5 },
-                      strong: { fontWeight: 'bold' },
-                      b: { fontWeight: 'bold' },
-                      em: { fontStyle: 'italic' },
-                      i: { fontStyle: 'italic' },
-                      u: { textDecorationLine: 'underline' },
-                      h1: { fontSize: effectiveFontSize * 1.5, fontWeight: 'bold', marginBottom: effectiveFontSize },
-                      h2: { fontSize: effectiveFontSize * 1.3, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.8 },
-                      h3: { fontSize: effectiveFontSize * 1.1, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.6 },
-                    }}
+                  <RenderHTMLConfig
+                    html={paragraphHTML}
+                    settings={settings}
+                    effectiveFontSize={effectiveFontSize}
                   />
                 ) : (
                   <Text 
@@ -626,14 +619,10 @@ export default function RSVPReader({
               </View>
             </ScrollView>
             {selectedWordIndex !== null && (
-              <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
-                <TouchableOpacity
-                  style={[styles.rsvpPromptButton, { backgroundColor: settings.accentColor }]}
-                  onPress={() => handleViewModeChange('speed')}
-                >
-                  <Text style={styles.rsvpPromptButtonText}>Start RSVP here</Text>
-                </TouchableOpacity>
-              </View>
+              <RSVPPrompt
+                settings={settings}
+                onStartRSVP={() => handleViewModeChange('speed')}
+              />
             )}
           </View>
         )}
@@ -648,9 +637,8 @@ export default function RSVPReader({
             >
               <View style={styles.centeredTextView}>
                 {currentChapter?.htmlContent ? (
-                  <RenderHTML
-                    contentWidth={800}
-                    source={{ html: (() => {
+                  <RenderHTMLConfig
+                    html={(() => {
                       const paragraphs = currentChapter.htmlContent.split(/<\/p>|<\/div>/).filter(p => p.trim());
                       const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
                       let wordCount = 0;
@@ -666,27 +654,9 @@ export default function RSVPReader({
                       }
                       const endIndex = Math.min(paragraphs.length, startIndex + 6);
                       return paragraphs.slice(startIndex, endIndex).join('</p>') + '</p>';
-                    })() }}
-                    baseStyle={{
-                      color: '#fff',
-                      fontSize: effectiveFontSize,
-                      fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
-                      textAlign: 'left',
-                      lineHeight: effectiveFontSize * 1.5,
-                    }}
-                    tagsStyles={{
-                      p: { marginBottom: effectiveFontSize * 0.8, marginTop: effectiveFontSize * 0.4 },
-                      div: { marginBottom: effectiveFontSize * 0.8 },
-                      br: { height: effectiveFontSize * 0.5 },
-                      strong: { fontWeight: 'bold' },
-                      b: { fontWeight: 'bold' },
-                      em: { fontStyle: 'italic' },
-                      i: { fontStyle: 'italic' },
-                      u: { textDecorationLine: 'underline' },
-                      h1: { fontSize: effectiveFontSize * 1.5, fontWeight: 'bold', marginBottom: effectiveFontSize },
-                      h2: { fontSize: effectiveFontSize * 1.3, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.8 },
-                      h3: { fontSize: effectiveFontSize * 1.1, fontWeight: 'bold', marginBottom: effectiveFontSize * 0.6 },
-                    }}
+                    })()}
+                    settings={settings}
+                    effectiveFontSize={effectiveFontSize}
                   />
                 ) : (
                   <Text 
@@ -709,14 +679,10 @@ export default function RSVPReader({
               </View>
             </ScrollView>
             {selectedWordIndex !== null && (
-              <View style={[styles.rsvpPrompt, { borderColor: settings.accentColor }]}>
-                <TouchableOpacity
-                  style={[styles.rsvpPromptButton, { backgroundColor: settings.accentColor }]}
-                  onPress={() => handleViewModeChange('speed')}
-                >
-                  <Text style={styles.rsvpPromptButtonText}>Start RSVP here</Text>
-                </TouchableOpacity>
-              </View>
+              <RSVPPrompt
+                settings={settings}
+                onStartRSVP={() => handleViewModeChange('speed')}
+              />
             )}
           </View>
         )}
@@ -881,576 +847,60 @@ export default function RSVPReader({
       )}
 
       {/* Word Selection Modal */}
-      <Modal
+      <WordSelectionModal
         visible={showWordSelection}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowWordSelection(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Starting Word</Text>
-            <Text style={styles.modalSubtitle}>
-              Choose where to start speed reading from
-            </Text>
-            <View style={styles.wordSelectionContainer}>
-              <Text style={styles.wordSelectionText}>
-                Current position: Word {currentWordIndex + 1} of {allWords.length}
-              </Text>
-              <TouchableOpacity
-                style={styles.wordSelectionButton}
-                onPress={() => handleWordSelectionConfirm(currentWordIndex)}
-              >
-                <Text style={styles.wordSelectionButtonText}>Start from current position</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.wordSelectionButton}
-                onPress={() => {
-                  let paraStart = wordsBeforeChapterMemo;
-                  for (let i = currentWordIndex; i >= wordsBeforeChapterMemo; i--) {
-                    const word = allWords[i];
-                    if (word.match(/[.!?]$/)) {
-                      paraStart = i + 1;
-                      break;
-                    }
-                    if (i === wordsBeforeChapterMemo) paraStart = i;
-                  }
-                  handleWordSelectionConfirm(paraStart);
-                }}
-              >
-                <Text style={styles.wordSelectionButtonText}>Start from paragraph beginning</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.wordSelectionButton}
-                onPress={() => {
-                  handleWordSelectionConfirm(wordsBeforeChapterMemo);
-                }}
-              >
-                <Text style={styles.wordSelectionButtonText}>Start from chapter beginning</Text>
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: '#333' }]}
-              onPress={() => setShowWordSelection(false)}
-            >
-              <Text style={styles.modalButtonTextWhite}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setShowWordSelection(false)}
+        currentWordIndex={currentWordIndex}
+        totalWords={allWords.length}
+        wordsBeforeChapter={wordsBeforeChapterMemo}
+        allWords={allWords}
+        onConfirm={handleWordSelectionConfirm}
+      />
 
-      {/* Settings Modal - keeping inline for now, can be extracted later */}
-      <Modal
+      {/* Settings Modal */}
+      <SettingsModal
         visible={showSettings}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowSettings(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Settings</Text>
-            
-            <ScrollView style={styles.scrollView}>
-              {/* Word Color */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Current Word Color</Text>
-                <View style={styles.colorGrid}>
-                  {getDisplayColors('word').map((color) => (
-                    <TouchableOpacity
-                      key={color.value}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color.value },
-                        settings.wordColor === color.value && styles.colorOptionSelected,
-                      ]}
-                      onPress={() => {
-                        setSettings({ ...settings, wordColor: color.value });
-                        setCustomWordColorInput('');
-                        addToRecentColors('word', color.value);
-                      }}
-                    >
-                      {settings.wordColor === color.value && (
-                        <Text style={styles.colorCheck}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={styles.customColorContainer}>
-                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
-                  <TextInput
-                    style={styles.colorInput}
-                    value={customWordColorInput}
-                    onChangeText={(text) => {
-                      setCustomWordColorInput(text);
-                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
-                        setSettings({ ...settings, wordColor: text });
-                        addToRecentColors('word', text);
-                      }
-                    }}
-                    placeholder="#ffffff"
-                    placeholderTextColor="#666"
-                    maxLength={7}
-                  />
-                  <TouchableOpacity
-                    style={styles.colorPickerButton}
-                    onPress={() => colorPicker.handleOpenColorPicker('word')}
-                  >
-                    <Text style={styles.colorPickerButtonText}>🎨</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Accent Color */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Highlighted Letter Color</Text>
-                <View style={styles.colorGrid}>
-                  {getDisplayColors('accent').map((color) => (
-                    <TouchableOpacity
-                      key={color.value}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color.value },
-                        settings.accentColor === color.value && styles.colorOptionSelected,
-                      ]}
-                      onPress={() => {
-                        setSettings({ ...settings, accentColor: color.value });
-                        setCustomAccentColorInput('');
-                        addToRecentColors('accent', color.value);
-                      }}
-                    >
-                      {settings.accentColor === color.value && (
-                        <Text style={styles.colorCheck}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={styles.customColorContainer}>
-                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
-                  <TextInput
-                    style={styles.colorInput}
-                    value={customAccentColorInput}
-                    onChangeText={(text) => {
-                      setCustomAccentColorInput(text);
-                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
-                        setSettings({ ...settings, accentColor: text });
-                        addToRecentColors('accent', text);
-                      }
-                    }}
-                    placeholder="#00ff88"
-                    placeholderTextColor="#666"
-                    maxLength={7}
-                  />
-                  <TouchableOpacity
-                    style={styles.colorPickerButton}
-                    onPress={() => colorPicker.handleOpenColorPicker('accent')}
-                  >
-                    <Text style={styles.colorPickerButtonText}>🎨</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Background Color */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Background Color</Text>
-                <View style={styles.colorGrid}>
-                  {getDisplayColors('background').map((color) => (
-                    <TouchableOpacity
-                      key={color.value}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color.value },
-                        settings.backgroundColor === color.value && styles.colorOptionSelected,
-                      ]}
-                      onPress={() => {
-                        setSettings({ ...settings, backgroundColor: color.value });
-                        setCustomBackgroundColorInput('');
-                        addToRecentColors('background', color.value);
-                      }}
-                    >
-                      {settings.backgroundColor === color.value && (
-                        <Text style={styles.colorCheck}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={styles.customColorContainer}>
-                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
-                  <TextInput
-                    style={styles.colorInput}
-                    value={customBackgroundColorInput}
-                    onChangeText={(text) => {
-                      setCustomBackgroundColorInput(text);
-                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
-                        setSettings({ ...settings, backgroundColor: text });
-                        addToRecentColors('background', text);
-                      }
-                    }}
-                    placeholder="#000000"
-                    placeholderTextColor="#666"
-                    maxLength={7}
-                  />
-                  <TouchableOpacity
-                    style={styles.colorPickerButton}
-                    onPress={() => colorPicker.handleOpenColorPicker('background')}
-                  >
-                    <Text style={styles.colorPickerButtonText}>🎨</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Text Color */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Text Color (Paragraph/Page View)</Text>
-                <View style={styles.colorGrid}>
-                  {getDisplayColors('text').map((color) => (
-                    <TouchableOpacity
-                      key={color.value}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color.value },
-                        settings.textColor === color.value && styles.colorOptionSelected,
-                      ]}
-                      onPress={() => {
-                        setSettings({ ...settings, textColor: color.value });
-                        setCustomTextColorInput('');
-                        addToRecentColors('text', color.value);
-                      }}
-                    >
-                      {settings.textColor === color.value && (
-                        <Text style={styles.colorCheck}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={styles.customColorContainer}>
-                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
-                  <TextInput
-                    style={styles.colorInput}
-                    value={customTextColorInput}
-                    onChangeText={(text) => {
-                      setCustomTextColorInput(text);
-                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
-                        setSettings({ ...settings, textColor: text });
-                        addToRecentColors('text', text);
-                      }
-                    }}
-                    placeholder="#ffffff"
-                    placeholderTextColor="#666"
-                    maxLength={7}
-                  />
-                  <TouchableOpacity
-                    style={styles.colorPickerButton}
-                    onPress={() => colorPicker.handleOpenColorPicker('text')}
-                  >
-                    <Text style={styles.colorPickerButtonText}>🎨</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Context Words Color */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Previous/Next Words Color</Text>
-                <View style={styles.colorGrid}>
-                  {getDisplayColors('contextWords').map((color) => (
-                    <TouchableOpacity
-                      key={color.value}
-                      style={[
-                        styles.colorOption,
-                        { backgroundColor: color.value },
-                        settings.contextWordsColor === color.value && styles.colorOptionSelected,
-                      ]}
-                      onPress={() => {
-                        setSettings({ ...settings, contextWordsColor: color.value });
-                        setCustomContextWordsColorInput('');
-                        addToRecentColors('contextWords', color.value);
-                      }}
-                    >
-                      {settings.contextWordsColor === color.value && (
-                        <Text style={styles.colorCheck}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={styles.customColorContainer}>
-                  <Text style={styles.settingSubLabel}>Custom Color (Hex):</Text>
-                  <TextInput
-                    style={styles.colorInput}
-                    value={customContextWordsColorInput}
-                    onChangeText={(text) => {
-                      setCustomContextWordsColorInput(text);
-                      if (/^#[0-9A-Fa-f]{6}$/.test(text)) {
-                        setSettings({ ...settings, contextWordsColor: text });
-                        addToRecentColors('contextWords', text);
-                      }
-                    }}
-                    placeholder="#999999"
-                    placeholderTextColor="#666"
-                    maxLength={7}
-                  />
-                  <TouchableOpacity
-                    style={styles.colorPickerButton}
-                    onPress={() => colorPicker.handleOpenColorPicker('contextWords')}
-                  >
-                    <Text style={styles.colorPickerButtonText}>🎨</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Show Context Words Toggle */}
-              <View style={styles.settingSection}>
-                <View style={styles.toggleContainer}>
-                  <Text style={styles.settingLabel}>Show Previous/Next Words</Text>
-                  <Switch
-                    value={settings.showContextWords}
-                    onValueChange={(value) => setSettings({ ...settings, showContextWords: value })}
-                    trackColor={{ false: '#333', true: settings.accentColor }}
-                    thumbColor={settings.showContextWords ? '#fff' : '#999'}
-                  />
-                </View>
-              </View>
-
-              {/* Context Words Spacing */}
-              {settings.showContextWords && (
-                <View style={styles.settingSection}>
-                  <Text style={styles.settingLabel}>Spacing: {settings.contextWordsSpacing}px</Text>
-                  <Slider
-                    style={styles.slider}
-                    minimumValue={0}
-                    maximumValue={40}
-                    value={settings.contextWordsSpacing}
-                    onValueChange={(value) => setSettings({ ...settings, contextWordsSpacing: Math.round(value) })}
-                    minimumTrackTintColor={settings.accentColor}
-                    maximumTrackTintColor="#333"
-                    thumbTintColor={settings.accentColor}
-                    step={1}
-                  />
-                </View>
-              )}
-              {/* Font Size */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Font Size: {Math.round(settings.fontSize)}pt</Text>
-                <Slider
-                  style={styles.slider}
-                  minimumValue={24}
-                  maximumValue={96}
-                  value={settings.fontSize}
-                  onValueChange={(value) => setSettings({ ...settings, fontSize: Math.round(value) })}
-                  minimumTrackTintColor={settings.accentColor}
-                  maximumTrackTintColor="#333"
-                  thumbTintColor={settings.accentColor}
-                  step={1}
-                />
-              </View>
-
-              {/* Font Family */}
-              <View style={styles.settingSection}>
-                <Text style={styles.settingLabel}>Font Family</Text>
-                <TouchableOpacity
-                  style={styles.fontPickerButton}
-                  onPress={() => setShowFontPicker(true)}
-                >
-                  <Text style={styles.fontPickerButtonText}>{settings.fontFamily}</Text>
-                  <Text style={styles.fontPickerButtonArrow}>▼</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-
-            <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: '#333' }]}
-              onPress={() => setShowSettings(false)}
-            >
-              <Text style={styles.modalButtonTextWhite}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSettingsChange={setSettings}
+        customAccentColorInput={customAccentColorInput}
+        customWordColorInput={customWordColorInput}
+        customBackgroundColorInput={customBackgroundColorInput}
+        customTextColorInput={customTextColorInput}
+        customContextWordsColorInput={customContextWordsColorInput}
+        onCustomColorInputChange={handleCustomColorInputChange}
+        onColorPickerOpen={(type) => colorPicker.handleOpenColorPicker(type)}
+        onFontPickerOpen={() => setShowFontPicker(true)}
+        getDisplayColors={getDisplayColors}
+        addToRecentColors={addToRecentColors}
+      />
 
       {/* Color Picker Modal */}
-      <Modal
+      <ColorPickerModal
         visible={colorPicker.showColorPicker}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => colorPicker.setShowColorPicker(false)}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => colorPicker.setShowColorPicker(false)}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={(e) => e.stopPropagation()}
-            style={styles.colorPickerModalContent}
-          >
-            <Text style={styles.modalTitle}>Select Color</Text>
-            
-            <View style={[styles.colorPreview, { backgroundColor: colorPicker.colorPickerCurrentColor }]}>
-              <Text style={styles.colorPreviewText}>{colorPicker.colorPickerCurrentColor}</Text>
-            </View>
-            
-            <View style={styles.colorPickerSliders}>
-              <View style={styles.colorSliderRow}>
-                <Text style={styles.colorSliderLabel}>R: {Math.round(colorPicker.colorPickerRgb.r)}</Text>
-                <Slider
-                  style={styles.colorSlider}
-                  minimumValue={0}
-                  maximumValue={255}
-                  value={colorPicker.colorPickerRgb.r}
-                  onValueChange={(value) => colorPicker.setColorPickerRgb({ ...colorPicker.colorPickerRgb, r: value })}
-                  minimumTrackTintColor="#f44336"
-                  maximumTrackTintColor="#333"
-                  thumbTintColor="#f44336"
-                  step={1}
-                />
-              </View>
-              <View style={styles.colorSliderRow}>
-                <Text style={styles.colorSliderLabel}>G: {Math.round(colorPicker.colorPickerRgb.g)}</Text>
-                <Slider
-                  style={styles.colorSlider}
-                  minimumValue={0}
-                  maximumValue={255}
-                  value={colorPicker.colorPickerRgb.g}
-                  onValueChange={(value) => colorPicker.setColorPickerRgb({ ...colorPicker.colorPickerRgb, g: value })}
-                  minimumTrackTintColor="#4caf50"
-                  maximumTrackTintColor="#333"
-                  thumbTintColor="#4caf50"
-                  step={1}
-                />
-              </View>
-              <View style={styles.colorSliderRow}>
-                <Text style={styles.colorSliderLabel}>B: {Math.round(colorPicker.colorPickerRgb.b)}</Text>
-                <Slider
-                  style={styles.colorSlider}
-                  minimumValue={0}
-                  maximumValue={255}
-                  value={colorPicker.colorPickerRgb.b}
-                  onValueChange={(value) => colorPicker.setColorPickerRgb({ ...colorPicker.colorPickerRgb, b: value })}
-                  minimumTrackTintColor="#2196f3"
-                  maximumTrackTintColor="#333"
-                  thumbTintColor="#2196f3"
-                  step={1}
-                />
-              </View>
-            </View>
-            
-            {/* Quick Color Presets */}
-            <View style={styles.quickColorsContainer}>
-              <Text style={styles.quickColorsLabel}>Quick Colors:</Text>
-              <View style={styles.quickColorsGrid}>
-                {['#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080', '#FFC0CB', '#A52A2A'].map((color) => (
-                  <TouchableOpacity
-                    key={color}
-                    style={[styles.quickColorOption, { backgroundColor: color }]}
-                    onPress={() => {
-                      colorPicker.setColorPickerRgb(hexToRgb(color));
-                    }}
-                  />
-                ))}
-              </View>
-            </View>
-            
-            <View style={styles.colorPickerActions}>
-              <TouchableOpacity
-                style={[styles.modalButton, { backgroundColor: '#333', flex: 1, marginRight: 10 }]}
-                onPress={() => colorPicker.setShowColorPicker(false)}
-              >
-                <Text style={styles.modalButtonTextWhite}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalButton, { backgroundColor: '#00ff88', flex: 1 }]}
-                onPress={handleColorPickerSelect}
-              >
-                <Text style={styles.modalButtonText}>Apply</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+        onClose={() => colorPicker.setShowColorPicker(false)}
+        onSelect={handleColorPickerSelect}
+        currentColor={colorPicker.colorPickerCurrentColor}
+        rgb={colorPicker.colorPickerRgb}
+        onRgbChange={colorPicker.setColorPickerRgb}
+      />
 
       {/* Font Picker Modal */}
-      <Modal
+      <FontPickerModal
         visible={showFontPicker}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowFontPicker(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Font Family</Text>
-            <FlatList
-              data={FONT_FAMILIES}
-              keyExtractor={(item) => item}
-              style={styles.fontList}
-              contentContainerStyle={styles.fontListContent}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.fontMenuItem,
-                    settings.fontFamily === item && styles.fontMenuItemSelected,
-                  ]}
-                  onPress={() => {
-                    setSettings({ ...settings, fontFamily: item });
-                    setShowFontPicker(false);
-                  }}
-                >
-                  <Text style={styles.fontMenuItemText}>{item}</Text>
-                  {settings.fontFamily === item && (
-                    <Text style={styles.fontMenuCheck}>✓</Text>
-                  )}
-                </TouchableOpacity>
-              )}
-            />
-            <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: '#333' }]}
-              onPress={() => setShowFontPicker(false)}
-            >
-              <Text style={styles.modalButtonTextWhite}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setShowFontPicker(false)}
+        settings={settings}
+        onFontSelect={(fontFamily) => setSettings({ ...settings, fontFamily })}
+      />
 
       {/* Chapter Menu Modal */}
-      <Modal
+      <ChapterMenuModal
         visible={showChapterMenu}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowChapterMenu(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Chapter</Text>
-            <FlatList
-              data={chapters}
-              keyExtractor={(item, index) => index.toString()}
-              style={styles.chapterList}
-              contentContainerStyle={styles.chapterListContent}
-              renderItem={({ item, index }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.chapterMenuItem,
-                    index === currentChapterIndex && styles.chapterMenuItemSelected,
-                  ]}
-                  onPress={() => handleChapterSelect(index)}
-                >
-                  <Text style={styles.chapterMenuItemText}>
-                    {formatChapterTitle(item.title)}
-                  </Text>
-                  {index === currentChapterIndex && (
-                    <Text style={styles.chapterMenuCheck}>✓</Text>
-                  )}
-                </TouchableOpacity>
-              )}
-            />
-            <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: '#333' }]}
-              onPress={() => setShowChapterMenu(false)}
-            >
-              <Text style={styles.modalButtonTextWhite}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setShowChapterMenu(false)}
+        chapters={chapters}
+        currentChapterIndex={currentChapterIndex}
+        onChapterSelect={handleChapterSelect}
+      />
     </View>
   );
 }
