@@ -1,26 +1,26 @@
 // Default color palettes (first 5 of each)
 export const DEFAULT_COMMON_COLORS = [
-  { name: 'Green', value: '#00ff88' },
-  { name: 'Yellow', value: '#ffeb3b' },
-  { name: 'Cyan', value: '#00bcd4' },
-  { name: 'Orange', value: '#ff9800' },
-  { name: 'Pink', value: '#e91e63' },
+  { label: 'Green', value: '#00ff88' },
+  { label: 'Yellow', value: '#ffeb3b' },
+  { label: 'Cyan', value: '#00bcd4' },
+  { label: 'Orange', value: '#ff9800' },
+  { label: 'Pink', value: '#e91e63' },
 ];
 
 export const DEFAULT_BACKGROUND_COLORS = [
-  { name: 'Black', value: '#000000' },
-  { name: 'Dark Gray', value: '#1a1a1a' },
-  { name: 'Gray', value: '#2a2a2a' },
-  { name: 'Navy', value: '#0a0a1a' },
-  { name: 'Dark Blue', value: '#0a1a2a' },
+  { label: 'Black', value: '#000000' },
+  { label: 'Dark Gray', value: '#1a1a1a' },
+  { label: 'Gray', value: '#2a2a2a' },
+  { label: 'Navy', value: '#0a0a1a' },
+  { label: 'Dark Blue', value: '#0a1a2a' },
 ];
 
 export const DEFAULT_TEXT_COLORS = [
-  { name: 'White', value: '#ffffff' },
-  { name: 'Light Gray', value: '#e0e0e0' },
-  { name: 'Beige', value: '#f5f5dc' },
-  { name: 'Light Blue', value: '#add8e6' },
-  { name: 'Yellow', value: '#ffffcc' },
+  { label: 'White', value: '#ffffff' },
+  { label: 'Light Gray', value: '#e0e0e0' },
+  { label: 'Beige', value: '#f5f5dc' },
+  { label: 'Light Blue', value: '#add8e6' },
+  { label: 'Yellow', value: '#ffffcc' },
 ];
 
 export const FONT_FAMILIES = [

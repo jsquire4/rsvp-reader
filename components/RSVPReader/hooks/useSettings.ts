@@ -26,17 +26,16 @@ export const useSettings = (initialWordsPerMinute: number) => {
   });
 
   // Helper function to get display colors (recent + defaults, max 5)
-  const getDisplayColors = (type: ColorType): Array<{ value: string; label: string }> => {
-    const defaults: Array<{ name: string; value: string }> = 
+  const getDisplayColors = (type: ColorType): Array<{ label: string; value: string }> => {
+    const defaults: Array<{ label: string; value: string }> = 
       type === 'accent' ? DEFAULT_COMMON_COLORS :
       type === 'word' ? DEFAULT_TEXT_COLORS :
       type === 'background' ? DEFAULT_BACKGROUND_COLORS :
       type === 'text' ? DEFAULT_TEXT_COLORS :
       DEFAULT_COMMON_COLORS;
     
-    const recent = recentColors[type].map((color: string) => ({ value: color, label: '' }));
-    const defaultsWithLabel = defaults.map((color) => ({ value: color.value, label: color.name }));
-    const combined = [...recent, ...defaultsWithLabel];
+    const recent = recentColors[type].map((color: string) => ({ label: '', value: color }));
+    const combined = [...recent, ...defaults];
     
     // Remove duplicates and limit to 5
     const unique = combined.filter((color, index, self) => 
