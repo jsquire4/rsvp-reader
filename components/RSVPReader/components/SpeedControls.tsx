@@ -53,7 +53,7 @@ export const SpeedControls: React.FC<SpeedControlsProps> = ({
       <TouchableOpacity
         style={styles.speedButton}
         onPress={() => onSpeedChange(25)}
-        onPressIn(() => onTooltip({ text: 'Increase speed', position: window.innerWidth - 120 })}
+        onPressIn={() => onTooltip({ text: 'Increase speed', position: window.innerWidth - 120 })}
         onPressOut={() => onTooltip(null)}
         onMouseEnter={() => onTooltip({ text: 'Increase speed', position: window.innerWidth - 120 })}
         onMouseLeave={() => onTooltip(null)}
