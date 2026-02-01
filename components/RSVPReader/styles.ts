@@ -186,11 +186,12 @@ export const styles = StyleSheet.create({
   },
   tooltip: {
     position: 'absolute',
-    bottom: 120,
+    bottom: 150, // Higher up to avoid covering buttons
     backgroundColor: 'rgba(0, 0, 0, 0.8)',
     padding: 8,
     borderRadius: 4,
     zIndex: 1000,
+    pointerEvents: 'none', // Prevent tooltip from interfering with mouse events
   },
   tooltipText: {
     color: '#fff',

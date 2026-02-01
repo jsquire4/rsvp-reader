@@ -6,14 +6,16 @@ import { styles } from '../styles';
 
 interface SpeedControlsProps {
   settings: Settings;
+  effectiveWPM: number;
   estimatedTime: string;
   onSpeedChange: (delta: number) => void;
   onSpeedSliderChange: (value: number) => void;
-  onTooltip: (text: string | null) => void;
+  onTooltip: (tooltip: { text: string; position: number } | null) => void;
 }
 
 export const SpeedControls: React.FC<SpeedControlsProps> = ({
   settings,
+  effectiveWPM,
   estimatedTime,
   onSpeedChange,
   onSpeedSliderChange,
@@ -21,11 +23,13 @@ export const SpeedControls: React.FC<SpeedControlsProps> = ({
 }) => {
   return (
     <View style={styles.speedControls}>
-      <TouchableOpacity 
-        style={styles.speedButton} 
+      <TouchableOpacity
+        style={styles.speedButton}
         onPress={() => onSpeedChange(-25)}
-        onPressIn={() => onTooltip('Decrease speed')}
+        onPressIn={() => onTooltip({ text: 'Decrease speed', position: 20 })}
         onPressOut={() => onTooltip(null)}
+        onMouseEnter={() => onTooltip({ text: 'Decrease speed', position: 20 })}
+        onMouseLeave={() => onTooltip(null)}
       >
         <Text style={styles.speedButtonText}>−</Text>
       </TouchableOpacity>
@@ -42,15 +46,17 @@ export const SpeedControls: React.FC<SpeedControlsProps> = ({
           step={1}
         />
         <View style={styles.speedInfo}>
-          <Text style={styles.speedText}>{settings.wordsPerMinute} WPM</Text>
+          <Text style={styles.speedText}>{effectiveWPM} WPM</Text>
           <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
         </View>
       </View>
-      <TouchableOpacity 
-        style={styles.speedButton} 
+      <TouchableOpacity
+        style={styles.speedButton}
         onPress={() => onSpeedChange(25)}
-        onPressIn={() => onTooltip('Increase speed')}
+        onPressIn(() => onTooltip({ text: 'Increase speed', position: window.innerWidth - 120 })}
         onPressOut={() => onTooltip(null)}
+        onMouseEnter={() => onTooltip({ text: 'Increase speed', position: window.innerWidth - 120 })}
+        onMouseLeave={() => onTooltip(null)}
       >
         <Text style={styles.speedButtonText}>+</Text>
       </TouchableOpacity>

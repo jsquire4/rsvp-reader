@@ -7,15 +7,33 @@ import { getWordDelay } from '../utils/delayUtils';
 export const useWordProcessing = (
   chapters: Chapter[],
   settings: Settings,
-  currentChapterIndex: number,
   onComplete?: () => void
 ) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track actual delays for real-time WPM calculation (last 100 words)
+  const delayHistoryRef = useRef<number[]>([]);
+  const [measuredWPM, setMeasuredWPM] = useState(0);
+
   const allWords = chapters.flatMap(ch => ch.words);
-  const delayMs = (60 / settings.wordsPerMinute) * 1000;
+  const delayMs = useMemo(() => (60 / settings.wordsPerMinute) * 1000, [settings.wordsPerMinute]);
+
+  // Derive currentChapterIndex from currentWordIndex
+  const currentChapterIndex = useMemo(() => {
+    if (chapters.length === 0) return 0;
+    
+    let wordCount = 0;
+    for (let i = 0; i < chapters.length; i++) {
+      const chapterEnd = wordCount + chapters[i].words.length;
+      if (currentWordIndex < chapterEnd) {
+        return i;
+      }
+      wordCount = chapterEnd;
+    }
+    return chapters.length - 1;
+  }, [currentWordIndex, chapters]);
 
   // Word advancement effect
   useEffect(() => {
@@ -31,12 +49,25 @@ export const useWordProcessing = (
     const displayInfo = getDisplayWords(currentWordIndex, allWords);
     const wordDelay = getWordDelay(currentWordIndex, allWords, chapters, settings, delayMs);
     const nextIndex = displayInfo.nextIndex;
-    
+
+    // Track delay for real-time WPM calculation
+    delayHistoryRef.current.push(wordDelay);
+    if (delayHistoryRef.current.length > 100) {
+      delayHistoryRef.current.shift(); // Keep only last 100 delays
+    }
+
+    // Calculate measured WPM from average delay
+    if (delayHistoryRef.current.length >= 10) { // Need at least 10 samples
+      const avgDelay = delayHistoryRef.current.reduce((sum, d) => sum + d, 0) / delayHistoryRef.current.length;
+      const calculatedWPM = Math.round((60 * 1000) / avgDelay);
+      setMeasuredWPM(calculatedWPM);
+    }
+
     const timeoutId = setTimeout(() => {
       setCurrentWordIndex((prev) => {
         const displayInfo = getDisplayWords(prev, allWords);
         const nextIdx = displayInfo.nextIndex;
-        
+
         if (nextIdx >= allWords.length) {
           setIsPlaying(false);
           onComplete?.();
@@ -57,7 +88,7 @@ export const useWordProcessing = (
         intervalRef.current = null;
       }
     };
-  }, [isPlaying, currentWordIndex, allWords.length, delayMs, onComplete, settings.wordsPerMinute, chapters, settings]);
+  }, [isPlaying, currentWordIndex, allWords, chapters, delayMs, onComplete]);
 
   const handlePlayPause = () => {
     setIsPlaying(!isPlaying);
@@ -198,8 +229,10 @@ export const useWordProcessing = (
     setIsPlaying,
     currentWordIndex,
     setCurrentWordIndex,
+    currentChapterIndex, // Export derived chapter index
     allWords,
     delayMs,
+    measuredWPM, // Real-time WPM based on actual delays
     handlePlayPause,
     handleReset,
     handlePrevious,

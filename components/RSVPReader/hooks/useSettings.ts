@@ -90,18 +90,19 @@ export const useSettings = (initialWordsPerMinute: number) => {
   }, []);
 
   // Save settings whenever they change (but not during initial load)
+  // Debounced to avoid excessive writes during slider adjustments
   useEffect(() => {
     if (isLoadingSettings) return;
-    
-    const saveSettings = async () => {
+
+    const timeoutId = setTimeout(async () => {
       try {
         await AsyncStorage.setItem('rsvp_reader_settings', JSON.stringify(settings));
       } catch (error) {
         console.error('Error saving settings:', error);
       }
-    };
-    
-    saveSettings();
+    }, 500); // Wait 500ms after last change before saving
+
+    return () => clearTimeout(timeoutId);
   }, [settings, isLoadingSettings]);
 
   // Save recent colors whenever they change

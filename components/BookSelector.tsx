@@ -2,9 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Alert, Platform } from 'react-native';
 import { Asset } from 'expo-asset';
 import * as DocumentPicker from 'expo-document-picker';
-import { Paths } from 'expo-file-system';
-import * as FileSystem from 'expo-file-system/legacy';
-import { extractBookMetadata, BookMetadata } from '../utils/epubParser';
+import { BookMetadata, extractBookMetadata } from '../utils/epubParser';
+import { createBookEntry, formatBookDisplayName } from '../utils/bookMetadata';
+import {
+  BookEntry,
+  loadUploadedBooksNative,
+  saveUploadedBookNative,
+  loadUploadedBookWeb,
+} from '../utils/fileSystemOperations';
 
 interface BookSelectorProps {
   onBookSelect: (bookUri: string) => void;
@@ -12,34 +17,18 @@ interface BookSelectorProps {
 
 // Define books available in assets/books directory
 const BOOK_ASSETS = [
-  require('../assets/books/steinbeck-of-mice-and-men.epub'),
   // Add more books here as you add them to assets/books/
+  require('../assets/books/steinbeck-of-mice-and-men.epub'),
 ];
 
 export default function BookSelector({ onBookSelect }: BookSelectorProps) {
-  const [books, setBooks] = useState<Array<{ uri: string; name: string; metadata: BookMetadata }>>([]);
+  const [books, setBooks] = useState<BookEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [webBooks, setWebBooks] = useState<Array<{ uri: string; name: string; metadata: BookMetadata; blobUrl: string }>>([]);
+  const [webBooks, setWebBooks] = useState<Array<BookEntry & { blobUrl: string }>>([]);
 
   useEffect(() => {
     loadBooks();
   }, []);
-
-  const getBooksDirectory = () => {
-    return FileSystem.documentDirectory + 'books/';
-  };
-
-  const ensureBooksDirectory = async () => {
-    // File system APIs are not available on web
-    if (Platform.OS === 'web') {
-      return;
-    }
-    const booksDir = getBooksDirectory();
-    const dirInfo = await FileSystem.getInfoAsync(booksDir);
-    if (!dirInfo.exists) {
-      await FileSystem.makeDirectoryAsync(booksDir, { intermediates: true });
-    }
-  };
 
   const loadBooks = async () => {
     try {
@@ -78,28 +67,8 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
               fileName = uriParts[uriParts.length - 1] || 'Unknown';
             }
             
-            // Use metadata title/author if available, otherwise use filename
-            let displayName = metadata.title || fileName.replace('.epub', '');
-            if (metadata.author && metadata.title) {
-              displayName = `${displayName}\nby ${metadata.author}`;
-            }
-            
-            // Format filename if no metadata title
-            if (!metadata.title) {
-              displayName = fileName
-                .replace('.epub', '')
-                .replace(/-/g, ' ')
-                .split(' ')
-                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                .join(' ');
-            }
-            
-            console.log(`Successfully loaded book: ${displayName}`);
-            return {
-              uri: bookUri,
-              name: displayName,
-              metadata: metadata || {},
-            };
+            console.log(`Successfully loaded book: ${formatBookDisplayName(metadata, fileName)}`);
+            return createBookEntry(bookUri, metadata, fileName);
           } catch (error) {
             console.error(`Error loading asset book ${index}:`, error);
             // Return a basic entry even if loading fails
@@ -107,19 +76,9 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
               const asset = Asset.fromModule(assetModule);
               const fallbackUri = asset.uri || '';
               const fileName = fallbackUri.split('/').pop() || 'Unknown Book';
-              const displayName = fileName
-                .replace('.epub', '')
-                .replace(/-/g, ' ')
-                .split(' ')
-                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                .join(' ');
               
-              console.log(`Created fallback entry: ${displayName}`);
-              return {
-                uri: fallbackUri,
-                name: displayName,
-                metadata: {},
-              };
+              console.log(`Created fallback entry: ${formatBookDisplayName({}, fileName)}`);
+              return createBookEntry(fallbackUri, {}, fileName);
             } catch (fallbackError) {
               console.error('Fallback also failed:', fallbackError);
               // Last resort - return a basic entry
@@ -151,67 +110,11 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
       // Skip on web platform as file system APIs are not available
       if (Platform.OS !== 'web') {
         try {
-          await ensureBooksDirectory();
-          const booksDir = getBooksDirectory();
-          const dirInfo = await FileSystem.getInfoAsync(booksDir);
-          
-          if (dirInfo.exists) {
-          try {
-            const files = await FileSystem.readDirectoryAsync(booksDir);
-            const epubFiles = files.filter((file: string) => file.toLowerCase().endsWith('.epub'));
-            
-            if (epubFiles.length > 0) {
-              const uploadedBooks = await Promise.all(
-                epubFiles.map(async (fileName: string) => {
-                  const fileUri = `${booksDir}${fileName}`;
-                  try {
-                    let metadata: BookMetadata = {};
-                    try {
-                      metadata = await extractBookMetadata(fileUri);
-                    } catch (metaError) {
-                      console.warn(`Metadata extraction failed for ${fileName}:`, metaError);
-                    }
-                    
-                    let displayName = metadata.title || fileName.replace('.epub', '');
-                    if (metadata.author && metadata.title) {
-                      displayName = `${displayName}\nby ${metadata.author}`;
-                    }
-                    
-                    if (!metadata.title) {
-                      displayName = fileName
-                        .replace('.epub', '')
-                        .replace(/-/g, ' ')
-                        .split(' ')
-                        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
-                        .join(' ');
-                    }
-                    
-                    return {
-                      uri: fileUri,
-                      name: displayName,
-                      metadata: metadata || {},
-                    };
-                  } catch (error) {
-                    console.error(`Error loading uploaded book ${fileName}:`, error);
-                    return {
-                      uri: fileUri,
-                      name: fileName.replace('.epub', '').replace(/-/g, ' ').split(' ').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
-                      metadata: {},
-                    };
-                  }
-                })
-              );
-              
-              allBooks.push(...uploadedBooks);
-              console.log(`Loaded ${uploadedBooks.length} uploaded books`);
-            }
-          } catch (error) {
-            console.error('Error reading uploaded books directory:', error);
-            // Continue with just asset books
-          }
-          }
+          const uploadedBooks = await loadUploadedBooksNative();
+          allBooks.push(...uploadedBooks);
+          console.log(`Loaded ${uploadedBooks.length} uploaded books`);
         } catch (error) {
-          console.error('Error setting up books directory:', error);
+          console.error('Error loading uploaded books:', error);
           // Continue with just asset books - don't let this break everything
         }
       }
@@ -257,50 +160,20 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
       console.log('Source file URI:', file.uri);
       console.log('File name:', file.name);
 
+      const fileName = file.name || `book_${Date.now()}.epub`;
+
       if (Platform.OS === 'web') {
         // On web, create a blob URL and store in memory
         console.log('Processing file for web...');
         
-        // Read file as array buffer
-        const response = await fetch(file.uri);
-        const arrayBuffer = await response.arrayBuffer();
+        const bookEntry = await loadUploadedBookWeb(file.uri, fileName);
         
-        // Create blob URL
-        const blob = new Blob([arrayBuffer], { type: 'application/epub+zip' });
-        const blobUrl = URL.createObjectURL(blob);
-        
-        console.log('Blob URL created:', blobUrl);
-        
-        // Extract metadata
-        let metadata: BookMetadata = {};
-        try {
-          metadata = await extractBookMetadata(blobUrl);
-          console.log('Metadata extracted:', metadata);
-        } catch (metaError) {
-          console.warn('Metadata extraction failed:', metaError);
-        }
-        
-        // Create display name
-        const fileName = file.name || `book_${Date.now()}.epub`;
-        let displayName = metadata.title || fileName.replace('.epub', '');
-        if (metadata.author && metadata.title) {
-          displayName = `${displayName}\nby ${metadata.author}`;
-        }
-        
-        if (!metadata.title) {
-          displayName = fileName
-            .replace('.epub', '')
-            .replace(/-/g, ' ')
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-        }
+        // Extract blobUrl from the entry URI (it's the blob URL)
+        const blobUrl = bookEntry.uri;
         
         // Add to web books
         const newBook = {
-          uri: blobUrl,
-          name: displayName,
-          metadata: metadata || {},
+          ...bookEntry,
           blobUrl: blobUrl,
         };
         
@@ -309,59 +182,29 @@ export default function BookSelector({ onBookSelect }: BookSelectorProps) {
         setWebBooks(updatedWebBooks);
         
         // Immediately update the books list with the new book
-        const bookToAdd = {
-          uri: newBook.uri,
-          name: newBook.name,
-          metadata: newBook.metadata,
-        };
-        
-        // Update books list directly to show the new book immediately
-        setBooks(prev => [...prev, bookToAdd]);
+        setBooks(prev => [...prev, bookEntry]);
         
         Alert.alert('Success', 'Book uploaded successfully!');
       } else {
         // Native platform - save to file system
-        // Ensure books directory exists
-        console.log('Ensuring books directory exists...');
-        await ensureBooksDirectory();
+        console.log('Saving book to file system...');
         
-        // Get filename from URI
-        const fileName = file.name || `book_${Date.now()}.epub`;
-        const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-        
-        const booksDir = getBooksDirectory();
-        const destinationUri = `${booksDir}${sanitizedFileName}`;
-        
-        console.log('Destination file URI:', destinationUri);
-
-        // Check if file already exists
-        const fileInfo = await FileSystem.getInfoAsync(destinationUri);
-        if (fileInfo.exists) {
-          Alert.alert('Error', 'A book with this name already exists');
-          return;
+        try {
+          await saveUploadedBookNative(file.uri, fileName);
+          console.log('Book saved successfully!');
+          
+          Alert.alert('Success', 'Book uploaded successfully!');
+          
+          // Reload books
+          console.log('Reloading books...');
+          await loadBooks();
+        } catch (error) {
+          if (error instanceof Error && error.message === 'A book with this name already exists') {
+            Alert.alert('Error', 'A book with this name already exists');
+          } else {
+            throw error;
+          }
         }
-
-        // Copy file to books directory
-        console.log('Reading source file...');
-        const fileData = await FileSystem.readAsStringAsync(file.uri, { encoding: 'base64' });
-        console.log(`File data read, length: ${fileData.length} characters`);
-        
-        console.log('Writing file to destination...');
-        await FileSystem.writeAsStringAsync(destinationUri, fileData, { encoding: 'base64' });
-        console.log('File written successfully!');
-        
-        // Verify file was written
-        const verifyInfo = await FileSystem.getInfoAsync(destinationUri);
-        if (!verifyInfo.exists) {
-          throw new Error('File was not written successfully');
-        }
-        console.log('File verified, exists:', verifyInfo.exists);
-
-        Alert.alert('Success', 'Book uploaded successfully!');
-        
-        // Reload books
-        console.log('Reloading books...');
-        await loadBooks();
       }
     } catch (error) {
       console.error('Error uploading book:', error);

@@ -1,14 +1,17 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { View, Text, TouchableOpacity, ScrollView } from 'react-native';
-import { Chapter } from '../../utils/epubParser';
+import { View, Text } from 'react-native';
 import { RSVPReaderProps, ViewMode, ColorType } from './types';
 import { useSettings } from './hooks/useSettings';
 import { useProgress } from './hooks/useProgress';
 import { useColorPicker } from './hooks/useColorPicker';
 import { useWordProcessing } from './hooks/useWordProcessing';
-import { formatChapterTitle } from './utils/wordUtils';
 import { rgbToHex } from './utils/colorUtils';
-import { SpeedView } from './components/SpeedView';
+import {
+  findParagraphBoundaries,
+  getParagraphAtIndex,
+  calculateParagraphWordIndices,
+  extractParagraphs,
+} from './utils/paragraphUtils';
 import { ProgressBar } from './components/ProgressBar';
 import { SpeedControls } from './components/SpeedControls';
 import { SettingsModal } from './components/SettingsModal';
@@ -16,8 +19,9 @@ import { ColorPickerModal } from './components/ColorPickerModal';
 import { FontPickerModal } from './components/FontPickerModal';
 import { ChapterMenuModal } from './components/ChapterMenuModal';
 import { WordSelectionModal } from './components/WordSelectionModal';
-import { RSVPPrompt } from './components/RSVPPrompt';
-import { RenderHTMLConfig } from './components/RenderHTMLConfig';
+import { ChapterHeader } from './components/ChapterHeader';
+import { ReaderViewport } from './components/ReaderViewport';
+import { NavigationControls } from './components/NavigationControls';
 import { styles } from './styles';
 
 export default function RSVPReader({ 
@@ -32,46 +36,54 @@ export default function RSVPReader({
   const [showWordSelection, setShowWordSelection] = useState(false);
   const [showFontPicker, setShowFontPicker] = useState(false);
   const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(null);
-  const [tooltip, setTooltip] = useState<string | null>(null);
+  const [tooltip, setTooltip] = useState<{ text: string; position: number } | null>(null);
   const [customAccentColorInput, setCustomAccentColorInput] = useState('');
   const [customWordColorInput, setCustomWordColorInput] = useState('');
   const [customBackgroundColorInput, setCustomBackgroundColorInput] = useState('');
   const [customTextColorInput, setCustomTextColorInput] = useState('');
   const [customContextWordsColorInput, setCustomContextWordsColorInput] = useState('');
-  const isManuallyNavigatingRef = React.useRef(false);
 
   // Custom hooks
   const { settings, setSettings, getDisplayColors, addToRecentColors } = useSettings(initialWordsPerMinute);
-  const { currentChapterIndex, setCurrentChapterIndex, currentWordIndex, setCurrentWordIndex, isLoadingProgress } = useProgress(chapters, bookUri);
   const colorPicker = useColorPicker(settings);
-  const wordProcessing = useWordProcessing(chapters, settings, currentChapterIndex, onComplete);
+  
+  // wordProcessing is the single source of truth for currentWordIndex
+  // It derives currentChapterIndex internally from currentWordIndex
+  const wordProcessing = useWordProcessing(chapters, settings, onComplete);
+  
+  // useProgress only handles persistence, derives chapterIndex from currentWordIndex
+  const { currentChapterIndex, isLoadingProgress } = useProgress(
+    chapters,
+    bookUri,
+    wordProcessing.currentWordIndex,
+    React.useCallback((wordIndex: number) => {
+      // Initial load callback: set the word index (chapterIndex is derived automatically)
+      wordProcessing.setCurrentWordIndex(wordIndex);
+    }, [wordProcessing])
+  );
 
-  // Sync word processing state with progress state
-  // In speed view, wordProcessing is the source of truth
-  // In other views, progress hook is the source of truth
-  React.useEffect(() => {
-    if (!isManuallyNavigatingRef.current && viewMode !== 'speed') {
-      // Only sync from progress to wordProcessing in non-speed views
-      wordProcessing.setCurrentWordIndex(currentWordIndex);
-    }
-  }, [currentWordIndex, viewMode, wordProcessing]);
-
-  React.useEffect(() => {
-    if (!isManuallyNavigatingRef.current) {
-      // Always sync from wordProcessing to progress (wordProcessing is always authoritative)
-      setCurrentWordIndex(wordProcessing.currentWordIndex);
-    }
-  }, [wordProcessing.currentWordIndex]);
-
+  // Use wordProcessing as single source of truth
   const allWords = wordProcessing.allWords;
-  const currentChapter = chapters[currentChapterIndex];
+  const currentWordIndex = wordProcessing.currentWordIndex;
+  const currentChapter = chapters[wordProcessing.currentChapterIndex];
   const wordsBeforeChapterMemo = wordProcessing.wordsBeforeChapterMemo;
   const paragraphBoundaries = wordProcessing.paragraphBoundaries;
 
-  // Calculate estimated time to completion
+  // REAL-TIME SPEED MONITOR
+  // Tracks actual delays from last 100 words to calculate true reading speed
+  // Accounts for:
+  // - Actual punctuation density in THIS text (commas, periods, paragraphs)
+  // - Hyphenated word frequency
+  // - Multi-word display delays
+  // - Swing variation
+  // Falls back to estimated 0.82x multiplier when not enough data yet (first 10 words)
+  const estimatedEffectiveWPM = Math.round(settings.wordsPerMinute * 0.82);
+  const effectiveWPM = wordProcessing.measuredWPM > 0 ? wordProcessing.measuredWPM : estimatedEffectiveWPM;
+
+  // Calculate estimated time to completion using effective WPM
   const remainingWords = allWords.length - currentWordIndex - 1;
-  const estimatedMinutes = remainingWords > 0 ? remainingWords / settings.wordsPerMinute : 0;
-  const estimatedTime = estimatedMinutes < 1 
+  const estimatedMinutes = remainingWords > 0 ? remainingWords / effectiveWPM : 0;
+  const estimatedTime = estimatedMinutes < 1
     ? `${Math.round(estimatedMinutes * 60)}s`
     : estimatedMinutes < 60
     ? `${Math.round(estimatedMinutes)}m`
@@ -160,34 +172,22 @@ export default function RSVPReader({
   };
 
   const handlePreviousChapter = () => {
-    if (currentChapterIndex > 0) {
+    if (wordProcessing.currentChapterIndex > 0) {
       wordProcessing.stopPlayback();
       
-      const newChapterIndex = currentChapterIndex - 1;
+      const newChapterIndex = wordProcessing.currentChapterIndex - 1;
       let wordCount = 0;
       for (let i = 0; i < newChapterIndex; i++) {
         wordCount += chapters[i].words.length;
       }
       
-      // Set flag to prevent sync effects from interfering
-      isManuallyNavigatingRef.current = true;
-      
-      // Update word processing hook first (source of truth in speed view)
+      // wordProcessing is the single source of truth
       wordProcessing.setCurrentWordIndex(wordCount);
-      // Then update progress hook
-      setCurrentWordIndex(wordCount);
-      // Finally update chapter index
-      setCurrentChapterIndex(newChapterIndex);
-      
-      // Reset flag after a brief delay to allow state updates to complete
-      requestAnimationFrame(() => {
-        isManuallyNavigatingRef.current = false;
-      });
     }
   };
 
   const handleNextChapter = useCallback(() => {
-    const nextChapterIndex = currentChapterIndex + 1;
+    const nextChapterIndex = wordProcessing.currentChapterIndex + 1;
     if (nextChapterIndex >= chapters.length) {
       return; // Already at last chapter
     }
@@ -207,27 +207,9 @@ export default function RSVPReader({
       return; // Invalid calculation
     }
     
-    const targetWordIndex = wordCount;
-    
-    // Set flag synchronously BEFORE any state updates
-    isManuallyNavigatingRef.current = true;
-    
-    // Update chapter index first
-    setCurrentChapterIndex(nextChapterIndex);
-    
-    // Update word processing hook immediately (source of truth in speed view)
-    // This must happen before the sync effect runs
-    wordProcessing.setCurrentWordIndex(targetWordIndex);
-    
-    // Update progress hook
-    setCurrentWordIndex(targetWordIndex);
-    
-    // Reset flag after a longer delay to ensure all effects have completed
-    // The sync effects need time to see the flag and skip updating
-    setTimeout(() => {
-      isManuallyNavigatingRef.current = false;
-    }, 300);
-  }, [currentChapterIndex, chapters, allWords.length, wordProcessing]);
+    // wordProcessing is the single source of truth
+    wordProcessing.setCurrentWordIndex(wordCount);
+  }, [chapters, allWords.length, wordProcessing]);
 
   const handleChapterSelect = (chapterIndex: number) => {
     wordProcessing.stopPlayback();
@@ -237,27 +219,15 @@ export default function RSVPReader({
       wordCount += chapters[i].words.length;
     }
     
-    // Set flag to prevent sync effects from interfering
-    isManuallyNavigatingRef.current = true;
-    
-    // Update word processing hook first
+    // wordProcessing is the single source of truth
     wordProcessing.setCurrentWordIndex(wordCount);
-    // Then update progress hook
-    setCurrentWordIndex(wordCount);
-    // Finally update chapter index
-    setCurrentChapterIndex(chapterIndex);
     setShowChapterMenu(false);
-    
-    // Reset flag after a brief delay to allow state updates to complete
-    requestAnimationFrame(() => {
-      isManuallyNavigatingRef.current = false;
-    });
   };
 
   const handleViewModeChange = useCallback((newMode: ViewMode) => {
     if (newMode === 'speed' && viewMode !== 'speed') {
       if (selectedWordIndex !== null) {
-        setCurrentWordIndex(selectedWordIndex);
+        wordProcessing.setCurrentWordIndex(selectedWordIndex);
         setSelectedWordIndex(null);
         setViewMode('speed');
         wordProcessing.stopPlayback();
@@ -274,7 +244,7 @@ export default function RSVPReader({
   }, [viewMode, selectedWordIndex]);
 
   const handleWordSelectionConfirm = (wordIndex: number) => {
-    setCurrentWordIndex(wordIndex);
+    wordProcessing.setCurrentWordIndex(wordIndex);
     setViewMode('speed');
     setShowWordSelection(false);
     wordProcessing.stopPlayback();
@@ -282,230 +252,155 @@ export default function RSVPReader({
   };
 
   // Helper function to find actual paragraph boundaries based on line breaks or HTML tags
-  const findParagraphBoundaries = useCallback(() => {
-    const chapterStart = wordsBeforeChapterMemo;
-    const chapterEnd = chapterStart + currentChapter.words.length;
-    const currentWordInChapter = currentWordIndex - chapterStart;
-    
-    // Try to use rawText first (more reliable for paragraph detection)
-    if (currentChapter.rawText) {
-      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
-      
-      // Find which paragraph contains the current word
-      let wordCount = 0;
-      let currentParaIndex = 0;
-      for (let i = 0; i < paragraphs.length; i++) {
-        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-        if (wordCount + paraWordCount > currentWordInChapter) {
-          currentParaIndex = i;
-          break;
-        }
-        wordCount += paraWordCount;
-        if (i === paragraphs.length - 1) currentParaIndex = i;
-      }
-      
-      // Calculate word indices for current paragraph
-      let paraStartWordCount = 0;
-      for (let i = 0; i < currentParaIndex; i++) {
-        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-        paraStartWordCount += paraWordCount;
-      }
-      
-      const currentParaWordCount = paragraphs[currentParaIndex].split(/\s+/).filter(w => w.trim()).length;
-      const paraEndWordCount = paraStartWordCount + currentParaWordCount;
-      
-      return {
-        paraStart: chapterStart + paraStartWordCount,
-        paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount),
-        currentParaIndex,
-        totalParagraphs: paragraphs.length
-      };
-    }
-    
-    // Fallback to HTML paragraph tags
-    if (currentChapter.htmlContent) {
-      const html = currentChapter.htmlContent;
-      const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
-      if (paraMatches && paraMatches.length > 0) {
-        let wordCount = 0;
-        let currentParaIndex = 0;
-        
-        for (let i = 0; i < paraMatches.length; i++) {
-          const text = paraMatches[i].replace(/<[^>]*>/g, '');
-          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
-          if (wordCount + paraWordCount > currentWordInChapter) {
-            currentParaIndex = i;
-            break;
-          }
-          wordCount += paraWordCount;
-          if (i === paraMatches.length - 1) currentParaIndex = i;
-        }
-        
-        let paraStartWordCount = 0;
-        for (let i = 0; i < currentParaIndex; i++) {
-          const text = paraMatches[i].replace(/<[^>]*>/g, '');
-          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
-          paraStartWordCount += paraWordCount;
-        }
-        
-        const currentParaText = paraMatches[currentParaIndex].replace(/<[^>]*>/g, '');
-        const currentParaWordCount = currentParaText.split(/\s+/).filter(w => w.trim()).length;
-        const paraEndWordCount = paraStartWordCount + currentParaWordCount;
-        
-        return {
-          paraStart: chapterStart + paraStartWordCount,
-          paraEnd: Math.min(chapterEnd, chapterStart + paraEndWordCount),
-          currentParaIndex,
-          totalParagraphs: paraMatches.length
-        };
-      }
-    }
-    
-    // Fallback: use sentence endings if no paragraph structure found
-    let paraStart = chapterStart;
-    let paraEnd = chapterEnd;
-    
-    for (let i = currentWordIndex; i >= chapterStart; i--) {
-      const word = allWords[i];
-      if (word.match(/[.!?]$/)) {
-        paraStart = i + 1;
-        break;
-      }
-      if (i === chapterStart) paraStart = i;
-    }
-    
-    for (let i = currentWordIndex; i < chapterEnd; i++) {
-      const word = allWords[i];
-      if (word.match(/[.!?]$/)) {
-        paraEnd = i + 1;
-        break;
-      }
-    }
-    
-    return {
-      paraStart,
-      paraEnd,
-      currentParaIndex: 0,
-      totalParagraphs: 1
-    };
+  const getParagraphBoundaries = useCallback(() => {
+    return findParagraphBoundaries(
+      currentChapter,
+      currentWordIndex,
+      wordsBeforeChapterMemo,
+      allWords
+    );
   }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo, allWords]);
 
+  // TODO: See handleNextParagraph for notes on paragraph navigation behavior across different EPUB formats
   const handlePreviousParagraph = useCallback(() => {
-    const boundaries = findParagraphBoundaries();
-    const { currentParaIndex, totalParagraphs } = boundaries;
-    
+    const boundaries = getParagraphBoundaries();
+    const { currentParaIndex } = boundaries;
+
     if (currentParaIndex === 0) {
-      // Already at first paragraph, go to start of chapter
-      setCurrentWordIndex(wordsBeforeChapterMemo);
+      // At first paragraph of chapter - move to previous chapter (lands at chapter start)
+      if (wordProcessing.currentChapterIndex > 0) {
+        wordProcessing.stopPlayback();
+        const newChapterIndex = wordProcessing.currentChapterIndex - 1;
+        let wordCount = 0;
+        for (let i = 0; i < newChapterIndex; i++) {
+          wordCount += chapters[i].words.length;
+        }
+        wordProcessing.setCurrentWordIndex(wordCount);
+      }
       return;
     }
-    
+
     // Find the start of the previous paragraph
     const prevParaIndex = currentParaIndex - 1;
     const chapterStart = wordsBeforeChapterMemo;
-    
-    if (currentChapter.rawText) {
-      const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
-      let wordCount = 0;
-      for (let i = 0; i < prevParaIndex; i++) {
-        const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-        wordCount += paraWordCount;
-      }
-      setCurrentWordIndex(chapterStart + wordCount);
-    } else if (currentChapter.htmlContent) {
-      const html = currentChapter.htmlContent;
-      const paraMatches = html.match(/<(p|div)[^>]*>[\s\S]*?<\/(p|div)>/gi);
-      if (paraMatches && paraMatches.length > 0) {
-        let wordCount = 0;
-        for (let i = 0; i < prevParaIndex; i++) {
-          const text = paraMatches[i].replace(/<[^>]*>/g, '');
-          const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
-          wordCount += paraWordCount;
-        }
-        setCurrentWordIndex(chapterStart + wordCount);
-      }
-    }
-  }, [findParagraphBoundaries, currentChapter, wordsBeforeChapterMemo]);
 
+    // Extract paragraphs using utility (handles both rawText and htmlContent)
+    const paragraphs = extractParagraphs(currentChapter);
+
+    if (paragraphs.length > 0) {
+      const { start } = calculateParagraphWordIndices(paragraphs, prevParaIndex, chapterStart);
+      wordProcessing.setCurrentWordIndex(start);
+    }
+  }, [getParagraphBoundaries, currentChapter, wordsBeforeChapterMemo, chapters]);
+
+  // TODO: PARAGRAPH NAVIGATION BEHAVIOR - NEEDS REFINEMENT FOR DIFFERENT EPUB FORMATS
+  //
+  // Current implementation is optimized for EPUBs with large paragraph blocks (like "Of Mice and Men")
+  // where chapters typically have only 1-2 large <div> or <p> blocks instead of many small paragraphs.
+  //
+  // CURRENT BEHAVIOR:
+  // - Within chapter: advances from one paragraph to the next
+  // - At last paragraph: auto-advances to next chapter and lands at paragraph 1 (skips paragraph 0)
+  //   This skipping behavior prevents having to click twice per chapter in large-block EPUBs
+  //
+  // KNOWN LIMITATIONS / NEEDS TESTING:
+  // 1. EPUBs with many small paragraphs (novels with normal formatting)
+  //    - Current behavior might skip too much content
+  //    - Should landing at paragraph 0 be the default, with skipping only for large blocks?
+  //
+  // 2. Different EPUB structures:
+  //    - Some use <p> tags (good semantic paragraphs)
+  //    - Some use <div> blocks (often very large, few per chapter)
+  //    - Some mix both or use other elements
+  //    - Current paragraph detection (utils/paragraphUtils.ts) tries both rawText (\n\n splits) and HTML
+  //
+  // 3. Edge cases to test:
+  //    - EPUBs with single-paragraph chapters
+  //    - EPUBs with 50+ small paragraphs per chapter
+  //    - EPUBs with no clear paragraph structure
+  //    - Poetry, technical books, special formatting
+  //
+  // POTENTIAL IMPROVEMENTS:
+  // - Detect paragraph size/count and adjust navigation behavior dynamically
+  // - Add user preference for paragraph navigation style (skip first para vs always land at chapter start)
+  // - Consider "smart" navigation that detects content density
+  // - Test with diverse EPUB library and adjust heuristics
+  //
+  // See also: handlePreviousParagraph, handleNextPage, handlePreviousPage
   const handleNextParagraph = useCallback(() => {
-    const boundaries = findParagraphBoundaries();
+    const boundaries = getParagraphBoundaries();
     const { currentParaIndex, totalParagraphs, paraEnd } = boundaries;
-    
+
     if (currentParaIndex >= totalParagraphs - 1) {
-      // Already at last paragraph, stay at end
+      // At last paragraph of chapter - move to next chapter
+      const nextChapterIndex = wordProcessing.currentChapterIndex + 1;
+      if (nextChapterIndex < chapters.length) {
+        wordProcessing.stopPlayback();
+
+        // Calculate word index for start of next chapter
+        let wordCount = 0;
+        for (let i = 0; i < nextChapterIndex; i++) {
+          wordCount += chapters[i].words.length;
+        }
+
+        // BEHAVIOR NOTE: Skip to paragraph 1 instead of paragraph 0 for smoother navigation
+        // This works well for EPUBs with large blocks, but may skip content in EPUBs with many small paragraphs
+        const nextChapter = chapters[nextChapterIndex];
+        const nextChapterParagraphs = extractParagraphs(nextChapter);
+
+        if (nextChapterParagraphs.length > 1) {
+          // Move to start of paragraph 1 (second paragraph)
+          const { start } = calculateParagraphWordIndices(nextChapterParagraphs, 1, wordCount);
+          wordProcessing.setCurrentWordIndex(start);
+        } else {
+          // Only one paragraph, just go to chapter start
+          wordProcessing.setCurrentWordIndex(wordCount);
+        }
+      }
       return;
     }
-    
+
     // Move to start of next paragraph (which is the end of current paragraph)
-    setCurrentWordIndex(paraEnd);
-  }, [findParagraphBoundaries]);
+    wordProcessing.setCurrentWordIndex(paraEnd);
+  }, [getParagraphBoundaries, chapters, currentWordIndex]);
 
   const handlePreviousPage = useCallback(() => {
-    if (!currentChapter?.rawText) return;
-    
-    const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+    const paragraphs = extractParagraphs(currentChapter);
+    if (paragraphs.length === 0) return;
+
     const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
-    
-    // Find current paragraph index
-    let wordCount = 0;
-    let currentParaIndex = 0;
-    for (let i = 0; i < paragraphs.length; i++) {
-      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-      if (wordCount + paraWordCount > currentWordInChapter) {
-        currentParaIndex = i;
-        break;
-      }
-      wordCount += paraWordCount;
-      if (i === paragraphs.length - 1) currentParaIndex = i;
-    }
-    
+
+    // Find current paragraph index using utility
+    const { paraIndex: currentParaIndex } = getParagraphAtIndex(paragraphs, currentWordInChapter);
+
     // Move back 6 paragraphs (or to start of chapter)
     const targetParaIndex = Math.max(0, currentParaIndex - 6);
-    
-    // Calculate word index for start of target paragraph
-    let targetWordCount = 0;
-    for (let i = 0; i < targetParaIndex; i++) {
-      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-      targetWordCount += paraWordCount;
-    }
-    
-    setCurrentWordIndex(wordsBeforeChapterMemo + targetWordCount);
+
+    // Calculate word index for start of target paragraph using utility
+    const { start } = calculateParagraphWordIndices(paragraphs, targetParaIndex, wordsBeforeChapterMemo);
+
+    wordProcessing.setCurrentWordIndex(start);
   }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo]);
 
   const handleNextPage = useCallback(() => {
-    if (!currentChapter?.rawText) return;
-    
-    const paragraphs = currentChapter.rawText.split(/\n\n+/).filter(p => p.trim());
+    const paragraphs = extractParagraphs(currentChapter);
+    if (paragraphs.length === 0) return;
+
     const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
-    
-    // Find current paragraph index
-    let wordCount = 0;
-    let currentParaIndex = 0;
-    for (let i = 0; i < paragraphs.length; i++) {
-      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-      if (wordCount + paraWordCount > currentWordInChapter) {
-        currentParaIndex = i;
-        break;
-      }
-      wordCount += paraWordCount;
-      if (i === paragraphs.length - 1) currentParaIndex = i;
-    }
-    
+
+    // Find current paragraph index using utility
+    const { paraIndex: currentParaIndex } = getParagraphAtIndex(paragraphs, currentWordInChapter);
+
     // Move forward 6 paragraphs (or to end of chapter)
     const targetParaIndex = Math.min(paragraphs.length - 1, currentParaIndex + 6);
-    
-    // Calculate word index for start of target paragraph
-    let targetWordCount = 0;
-    for (let i = 0; i < targetParaIndex; i++) {
-      const paraWordCount = paragraphs[i].split(/\s+/).filter(w => w.trim()).length;
-      targetWordCount += paraWordCount;
-    }
-    
+
+    // Calculate word index for start of target paragraph using utility
+    const { start } = calculateParagraphWordIndices(paragraphs, targetParaIndex, wordsBeforeChapterMemo);
+
     const chapterEnd = wordsBeforeChapterMemo + currentChapter.words.length;
-    const targetIndex = wordsBeforeChapterMemo + targetWordCount;
-    
-    if (targetIndex < chapterEnd) {
-      setCurrentWordIndex(targetIndex);
+
+    if (start < chapterEnd) {
+      wordProcessing.setCurrentWordIndex(start);
     }
   }, [currentChapter, currentWordIndex, wordsBeforeChapterMemo]);
 
@@ -554,11 +449,7 @@ export default function RSVPReader({
   return (
     <View style={[styles.container, { backgroundColor: settings.backgroundColor }]}>
       {/* Chapter name at top */}
-      {currentChapter?.title && (
-        <View style={styles.chapterNameContainer}>
-          <Text style={styles.chapterName}>{formatChapterTitle(currentChapter.title)}</Text>
-        </View>
-      )}
+      <ChapterHeader chapter={currentChapter} />
 
       {/* Progress bar */}
       <ProgressBar
@@ -569,276 +460,73 @@ export default function RSVPReader({
         bookRemainingPercent={bookRemainingPercent}
         settings={settings}
         onValueChange={(value) => {
-          setCurrentWordIndex(Math.round(value));
+          wordProcessing.setCurrentWordIndex(Math.round(value));
           wordProcessing.stopPlayback();
         }}
       />
 
       {/* Reader area - different views */}
-      <View style={viewMode === 'speed' ? styles.readerAreaSpeed : styles.readerArea}>
-        {viewMode === 'speed' && (
-          <SpeedView
-            allWords={allWords}
-            currentWordIndex={currentWordIndex}
-            settings={settings}
-          />
-        )}
-        
-        {viewMode === 'paragraph' && (
-          <View style={styles.textViewContainer}>
-            <ScrollView 
-              style={styles.textView} 
-              contentContainerStyle={styles.textViewContent}
-              scrollEnabled={true}
-              showsVerticalScrollIndicator={true}
-            >
-              <View style={styles.centeredTextView}>
-                {paragraphHTML ? (
-                  <RenderHTMLConfig
-                    html={paragraphHTML}
-                    settings={settings}
-                    effectiveFontSize={effectiveFontSize}
-                  />
-                ) : (
-                  <Text 
-                    selectable
-                    onPress={() => setSelectedWordIndex(currentWordIndex)}
-                    onLongPress={() => setSelectedWordIndex(currentWordIndex)}
-                    style={[
-                      styles.paragraphText, 
-                      { 
-                        fontSize: effectiveFontSize, 
-                        fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
-                        color: settings.textColor,
-                      }
-                    ]}
-                  >
-                    {paragraphText}
-                  </Text>
-                )}
-              </View>
-            </ScrollView>
-            {selectedWordIndex !== null && (
-              <RSVPPrompt
-                settings={settings}
-                onStartRSVP={() => handleViewModeChange('speed')}
-              />
-            )}
-          </View>
-        )}
-        
-        {viewMode === 'page' && (
-          <View style={styles.textViewContainer}>
-            <ScrollView 
-              style={styles.textView} 
-              contentContainerStyle={styles.textViewContent}
-              scrollEnabled={true}
-              showsVerticalScrollIndicator={true}
-            >
-              <View style={styles.centeredTextView}>
-                {currentChapter?.htmlContent ? (
-                  <RenderHTMLConfig
-                    html={(() => {
-                      const paragraphs = currentChapter.htmlContent.split(/<\/p>|<\/div>/).filter(p => p.trim());
-                      const currentWordInChapter = currentWordIndex - wordsBeforeChapterMemo;
-                      let wordCount = 0;
-                      let startIndex = 0;
-                      for (let i = 0; i < paragraphs.length; i++) {
-                        const text = paragraphs[i].replace(/<[^>]*>/g, '');
-                        const paraWordCount = text.split(/\s+/).filter(w => w.trim()).length;
-                        if (wordCount + paraWordCount > currentWordInChapter) {
-                          startIndex = i;
-                          break;
-                        }
-                        wordCount += paraWordCount;
-                      }
-                      const endIndex = Math.min(paragraphs.length, startIndex + 6);
-                      return paragraphs.slice(startIndex, endIndex).join('</p>') + '</p>';
-                    })()}
-                    settings={settings}
-                    effectiveFontSize={effectiveFontSize}
-                  />
-                ) : (
-                  <Text 
-                    selectable
-                    onPress={() => setSelectedWordIndex(currentWordIndex)}
-                    onLongPress={() => setSelectedWordIndex(currentWordIndex)}
-                    style={[
-                      styles.pageText, 
-                      { 
-                        fontSize: effectiveFontSize, 
-                        fontFamily: settings.fontFamily === 'System' ? undefined : settings.fontFamily,
-                        lineHeight: effectiveFontSize * 1.5,
-                        color: settings.textColor,
-                      }
-                    ]}
-                  >
-                    {pageText}
-                  </Text>
-                )}
-              </View>
-            </ScrollView>
-            {selectedWordIndex !== null && (
-              <RSVPPrompt
-                settings={settings}
-                onStartRSVP={() => handleViewModeChange('speed')}
-              />
-            )}
-          </View>
-        )}
-      </View>
+      <ReaderViewport
+        viewMode={viewMode}
+        allWords={allWords}
+        currentWordIndex={currentWordIndex}
+        settings={settings}
+        currentChapter={currentChapter}
+        paragraphText={paragraphText}
+        paragraphHTML={paragraphHTML}
+        pageText={pageText}
+        effectiveFontSize={effectiveFontSize}
+        selectedWordIndex={selectedWordIndex}
+        wordsBeforeChapterMemo={wordsBeforeChapterMemo}
+        onWordSelect={setSelectedWordIndex}
+        onViewModeChange={handleViewModeChange}
+      />
 
       {/* Tooltip */}
       {tooltip && (
-        <View style={styles.tooltip}>
-          <Text style={styles.tooltipText}>{tooltip}</Text>
+        <View style={[styles.tooltip, { left: tooltip.position }]}>
+          <Text style={styles.tooltipText}>{tooltip.text}</Text>
         </View>
       )}
 
       {/* Main controls */}
-      <View style={styles.controls}>
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={() => setShowChapterMenu(true)}
-          onPressIn={() => setTooltip('Select chapter')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>📖</Text>
-        </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={handlePreviousChapter}
-          onPressIn={() => setTooltip('Previous chapter')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>⏮</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={() => {
-            if (viewMode === 'speed') {
-              wordProcessing.handlePrevious();
-            } else if (viewMode === 'paragraph') {
-              handlePreviousParagraph();
-            } else if (viewMode === 'page') {
-              handlePreviousPage();
-            }
-          }}
-          onPressIn={() => {
-            if (viewMode === 'speed') setTooltip('Previous word');
-            else if (viewMode === 'paragraph') setTooltip('Previous paragraph');
-            else if (viewMode === 'page') setTooltip('Previous page');
-          }}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>{'<'}</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={[styles.button, viewMode !== 'speed' && styles.buttonDisabled]} 
-          onPress={() => {
-            if (viewMode === 'speed') {
-              wordProcessing.handlePlayPause();
-            } else {
-              setTooltip('Speed reading controls available in Speed view');
-              setTimeout(() => setTooltip(null), 2000);
-            }
-          }}
-          onPressIn={() => {
-            if (viewMode === 'speed') {
-              setTooltip(wordProcessing.isPlaying ? 'Pause' : 'Play');
-            }
-          }}
-          onPressOut={() => {
-            if (viewMode === 'speed') {
-              setTooltip(null);
-            }
-          }}
-        >
-          <Text style={[styles.buttonText, viewMode !== 'speed' && styles.buttonTextDisabled]}>
-            {wordProcessing.isPlaying ? '⏸' : '▶'}
-          </Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={() => {
-            if (viewMode === 'speed') {
-              wordProcessing.handleNext();
-            } else if (viewMode === 'paragraph') {
-              handleNextParagraph();
-            } else if (viewMode === 'page') {
-              handleNextPage();
-            }
-          }}
-          onPressIn={() => {
-            if (viewMode === 'speed') setTooltip('Next word');
-            else if (viewMode === 'paragraph') setTooltip('Next paragraph');
-            else if (viewMode === 'page') setTooltip('Next page');
-          }}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>{'>'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={handleNextChapter}
-          onPressIn={() => setTooltip('Next chapter')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>⏭</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={wordProcessing.handleReset}
-          onPressIn={() => setTooltip('Reset to beginning')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>↻</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={() => setShowSettings(true)}
-          onPressIn={() => setTooltip('Settings')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={styles.buttonText}>⚙</Text>
-        </TouchableOpacity>
-        
-        {/* View Mode Buttons */}
-        <TouchableOpacity
-          style={[styles.button, styles.viewModeButton, viewMode === 'speed' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('speed')}
-          onPressIn={() => setTooltip('Speed reading')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={[styles.buttonText, viewMode === 'speed' && { color: settings.accentColor }]}>S</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.button, styles.viewModeButton, viewMode === 'paragraph' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('paragraph')}
-          onPressIn={() => setTooltip('Paragraph view')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={[styles.buttonText, viewMode === 'paragraph' && { color: settings.accentColor }]}>P</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.button, styles.viewModeButton, viewMode === 'page' && styles.viewModeButtonActive]}
-          onPress={() => handleViewModeChange('page')}
-          onPressIn={() => setTooltip('Page view')}
-          onPressOut={() => setTooltip(null)}
-        >
-          <Text style={[styles.buttonText, viewMode === 'page' && { color: settings.accentColor }]}>Pg</Text>
-        </TouchableOpacity>
-      </View>
+      <NavigationControls
+        viewMode={viewMode}
+        settings={settings}
+        isPlaying={wordProcessing.isPlaying}
+        onChapterMenuOpen={() => setShowChapterMenu(true)}
+        onPreviousChapter={handlePreviousChapter}
+        onPrevious={() => {
+          if (viewMode === 'speed') {
+            wordProcessing.handlePrevious();
+          } else if (viewMode === 'paragraph') {
+            handlePreviousParagraph();
+          } else if (viewMode === 'page') {
+            handlePreviousPage();
+          }
+        }}
+        onPlayPause={wordProcessing.handlePlayPause}
+        onNext={() => {
+          if (viewMode === 'speed') {
+            wordProcessing.handleNext();
+          } else if (viewMode === 'paragraph') {
+            handleNextParagraph();
+          } else if (viewMode === 'page') {
+            handleNextPage();
+          }
+        }}
+        onNextChapter={handleNextChapter}
+        onReset={wordProcessing.handleReset}
+        onSettingsOpen={() => setShowSettings(true)}
+        onViewModeChange={handleViewModeChange}
+        onTooltip={setTooltip}
+      />
 
       {/* Speed controls */}
       {viewMode === 'speed' && (
         <SpeedControls
           settings={settings}
+          effectiveWPM={effectiveWPM}
           estimatedTime={estimatedTime}
           onSpeedChange={handleSpeedChange}
           onSpeedSliderChange={handleSpeedSliderChange}
@@ -898,7 +586,7 @@ export default function RSVPReader({
         visible={showChapterMenu}
         onClose={() => setShowChapterMenu(false)}
         chapters={chapters}
-        currentChapterIndex={currentChapterIndex}
+        currentChapterIndex={wordProcessing.currentChapterIndex}
         onChapterSelect={handleChapterSelect}
       />
     </View>

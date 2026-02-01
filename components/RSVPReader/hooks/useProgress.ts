@@ -1,13 +1,31 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Chapter } from '../../../utils/epubParser';
 
-export const useProgress = (chapters: Chapter[], bookUri?: string) => {
-  const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
+export const useProgress = (
+  chapters: Chapter[],
+  bookUri: string | undefined,
+  currentWordIndex: number, // Accept currentWordIndex from wordProcessing (single source of truth)
+  onInitialLoad?: (wordIndex: number) => void // Callback to set initial state (chapterIndex is derived automatically)
+) => {
   const [isLoadingProgress, setIsLoadingProgress] = useState(true);
 
-  // Load saved progress on mount
+  // Calculate current chapter index from currentWordIndex
+  const currentChapterIndex = useMemo(() => {
+    if (chapters.length === 0) return 0;
+    
+    let wordCount = 0;
+    for (let i = 0; i < chapters.length; i++) {
+      const chapterEnd = wordCount + chapters[i].words.length;
+      if (currentWordIndex < chapterEnd) {
+        return i;
+      }
+      wordCount = chapterEnd;
+    }
+    return chapters.length - 1;
+  }, [currentWordIndex, chapters]);
+
+  // Load saved progress on mount and call callback to set initial state
   useEffect(() => {
     const loadProgress = async () => {
       if (!bookUri || chapters.length === 0) {
@@ -17,11 +35,10 @@ export const useProgress = (chapters: Chapter[], bookUri?: string) => {
       
       try {
         const savedProgress = await AsyncStorage.getItem(`book_progress_${bookUri}`);
-        if (savedProgress) {
-          const { chapterIndex, wordIndex } = JSON.parse(savedProgress);
-          if (chapterIndex >= 0 && chapterIndex < chapters.length && wordIndex >= 0) {
-            setCurrentChapterIndex(chapterIndex);
-            setCurrentWordIndex(wordIndex);
+        if (savedProgress && onInitialLoad) {
+          const { wordIndex } = JSON.parse(savedProgress);
+          if (wordIndex >= 0) {
+            onInitialLoad(wordIndex);
           }
         }
       } catch (error) {
@@ -32,31 +49,14 @@ export const useProgress = (chapters: Chapter[], bookUri?: string) => {
     };
     
     loadProgress();
-  }, [bookUri, chapters.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookUri, chapters.length]); // onInitialLoad intentionally excluded - should only run on mount
 
-  // Find which chapter the current word belongs to
-  useEffect(() => {
-    if (isLoadingProgress || chapters.length === 0) return;
-    
-    const allWords = chapters.flatMap(ch => ch.words);
-    let wordCount = 0;
-    for (let i = 0; i < chapters.length; i++) {
-      const chapterEnd = wordCount + chapters[i].words.length;
-      if (currentWordIndex < chapterEnd) {
-        if (i !== currentChapterIndex) {
-          setCurrentChapterIndex(i);
-        }
-        break;
-      }
-      wordCount = chapterEnd;
-    }
-  }, [currentWordIndex, chapters, currentChapterIndex, isLoadingProgress]);
-
-  // Save progress whenever it changes
+  // Save progress whenever it changes (debounced to avoid excessive writes)
   useEffect(() => {
     if (!bookUri || isLoadingProgress || chapters.length === 0) return;
-    
-    const saveProgress = async () => {
+
+    const timeoutId = setTimeout(async () => {
       try {
         await AsyncStorage.setItem(`book_progress_${bookUri}`, JSON.stringify({
           chapterIndex: currentChapterIndex,
@@ -65,16 +65,13 @@ export const useProgress = (chapters: Chapter[], bookUri?: string) => {
       } catch (error) {
         console.error('Error saving progress:', error);
       }
-    };
-    
-    saveProgress();
+    }, 1000); // Wait 1 second after last change before saving
+
+    return () => clearTimeout(timeoutId);
   }, [bookUri, currentChapterIndex, currentWordIndex, isLoadingProgress, chapters.length]);
 
   return {
     currentChapterIndex,
-    setCurrentChapterIndex,
-    currentWordIndex,
-    setCurrentWordIndex,
     isLoadingProgress,
   };
 };
