@@ -6,7 +6,6 @@ import { styles } from '../styles';
 
 interface SpeedControlsProps {
   settings: Settings;
-  effectiveWPM: number;
   estimatedTime: string;
   onSpeedChange: (delta: number) => void;
   onSpeedSliderChange: (value: number) => void;
@@ -15,7 +14,6 @@ interface SpeedControlsProps {
 
 export const SpeedControls: React.FC<SpeedControlsProps> = ({
   settings,
-  effectiveWPM,
   estimatedTime,
   onSpeedChange,
   onSpeedSliderChange,
@@ -46,7 +44,7 @@ export const SpeedControls: React.FC<SpeedControlsProps> = ({
           step={1}
         />
         <View style={styles.speedInfo}>
-          <Text style={styles.speedText}>{effectiveWPM} WPM</Text>
+          <Text style={styles.speedText}>{settings.wordsPerMinute} WPM</Text>
           <Text style={styles.timeEstimate}>Est: {estimatedTime}</Text>
         </View>
       </View>

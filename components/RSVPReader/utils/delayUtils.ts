@@ -1,8 +1,20 @@
 import { Settings } from '../types';
 import { getCleanWordLength, getDisplayWords } from './wordUtils';
 
+// Simple hash function for deterministic "random" values
+const hashString = (str: string): number => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash);
+};
+
 // Calculate swing variation based on word length
-// Adds +/- 10% variation, biased toward longer words (slower) and shorter words (faster)
+// Adds +/- 15% variation, biased toward longer words (slower) and shorter words (faster)
+// Uses deterministic hash instead of Math.random() for consistent results
 export const calculateSwing = (word: string): number => {
   if (!word || word.length === 0) return 0;
   
@@ -14,21 +26,22 @@ export const calculateSwing = (word: string): number => {
   // Cap at 15 for normalization, but allow longer words
   const normalizedLength = Math.min(wordLength / 15, 1);
   
-  // Generate random value between -0.10 and +0.10
-  const randomVariation = (Math.random() * 0.2) - 0.10; // Range: -0.10 to +0.10
+  // Generate deterministic "random" value between -0.15 and +0.15 based on word hash
+  const hash = hashString(cleanWord.toLowerCase());
+  const randomVariation = ((hash % 300) / 1000) - 0.15; // Range: -0.15 to +0.15
   
   // Bias factor: shifts the random variation based on word length
-  // Short words (normalizedLength ~ 0): bias toward -0.10 (faster)
-  // Long words (normalizedLength ~ 1): bias toward +0.10 (slower)
+  // Short words (normalizedLength ~ 0): bias toward -0.15 (faster)
+  // Long words (normalizedLength ~ 1): bias toward +0.15 (slower)
   // Medium words (normalizedLength ~ 0.5): neutral bias
-  const biasFactor = (normalizedLength - 0.5) * 0.133; // Range: -0.0665 to +0.0665 (reduced to fit within +/- 10%)
+  const biasFactor = (normalizedLength - 0.5) * 0.20; // Range: -0.10 to +0.10 (reduced to fit within +/- 15%)
   
   // Combine random variation with bias
   // The bias shifts the center of the random distribution
   const swing = randomVariation + biasFactor;
   
-  // Clamp to +/- 10% to ensure we stay within bounds
-  return Math.max(-0.10, Math.min(0.10, swing));
+  // Clamp to +/- 15% to ensure we stay within bounds
+  return Math.max(-0.15, Math.min(0.15, swing));
 };
 
 // Calculate delay for current word based on punctuation
@@ -111,6 +124,11 @@ export const getWordDelay = (
   const lastWordIndex = wordIndex + wordsToDisplay.length - 1;
   let totalDelay = baseDelayWithSwing;
   
+  // Calculate the per-word delay actually being used (for punctuation pause calculations)
+  // Punctuation pauses should be proportional to a single word's delay (with swing),
+  // regardless of whether we're displaying one or multiple words
+  const perWordDelay = delayMs * (1 + swingFactor);
+  
   // Check for opening quotation marks at the start of the last word
   const startsWithQuote = /^["'«‹]/.test(lastWord);
   
@@ -132,35 +150,35 @@ export const getWordDelay = (
   
   // Check for comma
   if (/,$/.test(lastWord)) {
-    // Comma pause: additional pause equal to 75% of word pause (delayMs * 0.75)
-    totalDelay += delayMs * 0.75;
+    // Comma pause: additional pause equal to 50% of per-word delay
+    totalDelay += perWordDelay * 0.5;
   }
   // Check for opening quotation marks
   else if (startsWithQuote) {
-    // Opening quote pause: additional pause equal to 75% of word pause (delayMs * 0.75)
-    totalDelay += delayMs * 0.75;
+    // Opening quote pause: additional pause equal to 50% of per-word delay
+    totalDelay += perWordDelay * 0.5;
   }
   // Check for end-of-sentence punctuation: . ! ? ; : — –
   else if (/[.!?;:]$/.test(lastWord) || lastWord.endsWith('—') || lastWord.endsWith('–')) {
-    // End of sentence pause: additional pause equal to 75% of word pause (delayMs * 0.75) - same as comma
-    totalDelay += delayMs * 0.75;
+    // End of sentence pause: additional pause equal to 150% of per-word delay (longer than comma)
+    totalDelay += perWordDelay * 1.5;
     
-    // If this is also the end of a paragraph, add paragraph pause
+    // If this is also the end of a paragraph, add additional paragraph pause
     if (isEndOfParagraph) {
-      // End of paragraph: additional pause equal to 150% of word pause (delayMs * 1.5)
-      totalDelay += delayMs * 1.5;
+      // End of paragraph: additional pause equal to 200% of per-word delay
+      totalDelay += perWordDelay * 2.0;
     }
   }
   // Check for other grammatical markings: closing quotes, parentheses, brackets, etc.
   else if (/[)\]}"'»›]$/.test(lastWord)) {
-    // Other grammatical markings: additional pause equal to 37.5% of word pause (delayMs * 0.375)
-    totalDelay += delayMs * 0.375;
+    // Other grammatical markings: additional pause equal to 37.5% of per-word delay
+    totalDelay += perWordDelay * 0.375;
   }
   
   // Also check if this word is at the end of a paragraph (even without sentence-ending punctuation)
   if (isEndOfParagraph && !/[.!?;:]$/.test(lastWord) && !lastWord.endsWith('—') && !lastWord.endsWith('–')) {
-    // End of paragraph: additional pause equal to 150% of word pause (delayMs * 1.5)
-    totalDelay += delayMs * 1.5;
+    // End of paragraph: additional pause equal to 200% of per-word delay
+    totalDelay += perWordDelay * 2.0;
   }
   
   return totalDelay;

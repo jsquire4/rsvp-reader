@@ -69,20 +69,9 @@ export default function RSVPReader({
   const wordsBeforeChapterMemo = wordProcessing.wordsBeforeChapterMemo;
   const paragraphBoundaries = wordProcessing.paragraphBoundaries;
 
-  // REAL-TIME SPEED MONITOR
-  // Tracks actual delays from last 100 words to calculate true reading speed
-  // Accounts for:
-  // - Actual punctuation density in THIS text (commas, periods, paragraphs)
-  // - Hyphenated word frequency
-  // - Multi-word display delays
-  // - Swing variation
-  // Falls back to estimated 0.82x multiplier when not enough data yet (first 10 words)
-  const estimatedEffectiveWPM = Math.round(settings.wordsPerMinute * 0.82);
-  const effectiveWPM = wordProcessing.measuredWPM > 0 ? wordProcessing.measuredWPM : estimatedEffectiveWPM;
-
-  // Calculate estimated time to completion using effective WPM
+  // Calculate estimated time to completion using selected WPM
   const remainingWords = allWords.length - currentWordIndex - 1;
-  const estimatedMinutes = remainingWords > 0 ? remainingWords / effectiveWPM : 0;
+  const estimatedMinutes = remainingWords > 0 ? remainingWords / settings.wordsPerMinute : 0;
   const estimatedTime = estimatedMinutes < 1
     ? `${Math.round(estimatedMinutes * 60)}s`
     : estimatedMinutes < 60
@@ -526,7 +515,6 @@ export default function RSVPReader({
       {viewMode === 'speed' && (
         <SpeedControls
           settings={settings}
-          effectiveWPM={effectiveWPM}
           estimatedTime={estimatedTime}
           onSpeedChange={handleSpeedChange}
           onSpeedSliderChange={handleSpeedSliderChange}
